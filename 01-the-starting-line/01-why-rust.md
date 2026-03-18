@@ -76,7 +76,7 @@ These aren't theoretical problems. They cause real damage:
 
 ### Why "Rust"?
 
-The language is named after the **rust fungi** — organisms that are robust, resilient, and distributed. Also, Graydon Hoare liked that it was a short, five-letter word not taken by any other programming language.
+The language is named after the **rust fungi** — organisms that are robust, resilient, and distributed. Also, Graydon Hoare liked that it was a short, four-letter word not taken by any other programming language.
 
 ---
 
