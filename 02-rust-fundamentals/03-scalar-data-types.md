@@ -45,6 +45,20 @@ Scalar Types
 └── Character  → a single Unicode character ('A', '🦀', '中')
 ```
 
+### The Origin of These Four Types
+
+These four scalar types aren't arbitrary — they reflect fundamental categories that evolved over decades of programming language design:
+
+- **Integers** are the oldest data type in computing. The earliest computers (1940s-50s) could ONLY work with integers. Floating-point hardware didn't become standard until the 1980s. Even today, integer arithmetic is the fastest operation a CPU performs — typically completing in a single clock cycle.
+
+- **Floating-point numbers** were standardized in 1985 with **IEEE 754**, ending decades of chaos where every computer manufacturer had a different floating-point format. Before IEEE 754, the same program could give different results on different machines! William Kahan, the "Father of Floating Point," received the Turing Award for this work.
+
+- **Booleans** are named after **George Boole** (1815-1864), a mathematician who invented Boolean algebra — the mathematical foundation of all digital logic. Every `if` statement, every `&&` and `||` operation, traces back to Boole's work, which predates computers by almost a century.
+
+- **Characters** evolved from simple ASCII (128 characters, 1963) to Unicode (149,186+ characters, ongoing). The char type in Rust (4 bytes) can hold any Unicode scalar value, reflecting the modern reality that software must handle human languages from every culture.
+
+Most languages have these same four categories, though they differ in the details. Rust's approach is notable for making the **size explicit** in the type name (`i32`, `u64`), which prevents an entire class of portability bugs that plague C programs (where `int` can be 16, 32, or 64 bits depending on the platform).
+
 ---
 
 ## Integer Types — Whole Numbers
@@ -164,6 +178,35 @@ Step 3:  +1  = 1101_0110  ← This is -42 in two's complement
 ```
 
 > **Why two's complement?** Because the CPU can use the same circuitry for addition regardless of whether numbers are positive or negative. The hardware doesn't need to know if numbers are signed!
+
+### The History of Negative Number Representation
+
+Two's complement wasn't always the standard. Early computers used different systems:
+
+**Sign-magnitude (1940s-50s):** The simplest idea — use one bit for the sign, the rest for the value:
+```
++5 = 0_000_0101
+-5 = 1_000_0101  (just flip the sign bit)
+```
+Problem: There are TWO representations of zero (+0 and -0), and the hardware for addition is complex because it needs to check the sign bit first.
+
+**One's complement (1950s-60s):** Negate by flipping ALL bits:
+```
++5 = 0000_0101
+-5 = 1111_1010  (all bits flipped)
+```
+Still has two zeros (+0 = 00000000, -0 = 11111111), and addition requires an "end-around carry."
+
+**Two's complement (1960s-present):** The winner. Only ONE zero, and the same addition circuitry works for both positive and negative:
+```
++5 = 0000_0101
+-5 = 1111_1011  (flip all bits, add 1)
+ 0 = 0000_0000  (only ONE zero!)
+```
+
+Two's complement won because it simplifies hardware design — the CPU's Arithmetic Logic Unit (ALU) doesn't need separate circuits for signed and unsigned addition. This single design decision saved billions of transistors across the history of computing.
+
+> **Real-World Impact:** Every modern CPU (x86, ARM, RISC-V) uses two's complement. It's not just a convention — it's hardwired into the silicon. When Rust specifies `i8`, `i16`, `i32`, etc., it's directly mapping to how the CPU represents these numbers in its registers.
 
 ### Checking the Range in Code
 
@@ -460,6 +503,40 @@ For `f32`:
 │1│  8 bits  │        23 bits         │
 └─┴──────────┴───────────────────────┘
 ```
+
+### A Real-World Example: How 3.14 is Stored
+
+Let's trace how the number 3.14 gets stored as an `f64`:
+
+1. **Convert to binary:** 3.14 in binary ≈ 11.001000111101011100001... (repeating)
+2. **Normalize:** Move the decimal point: 1.1001000111101011100001... × 2¹
+3. **Encode:**
+   - Sign bit: 0 (positive)
+   - Exponent: 1 + 1023 (bias) = 1024 = 10000000000 in binary
+   - Mantissa: 1001000111101011100001... (52 bits, the leading 1 is implicit)
+
+```
+f64 representation of 3.14:
+0 10000000000 1001000111101011100001010001111010111000010100011111
+S  Exponent            Mantissa (52 bits)
+```
+
+The **bias** (1023 for f64, 127 for f32) exists so that exponents can represent both very large and very small numbers without needing a separate sign bit for the exponent.
+
+### Why "Floating Point"?
+
+The name comes from the fact that the decimal point "floats" — it can be positioned anywhere by changing the exponent:
+
+```
+1.5     = 1.1  × 2⁰     (point after first digit)
+0.75    = 1.1  × 2⁻¹    (point "floats" left)
+6.0     = 1.1  × 2²     (point "floats" right)
+0.001   ≈ 1.0  × 2⁻¹⁰   (point far to the left)
+```
+
+This is in contrast to **fixed-point** numbers, where the decimal point is always in the same position (used in some embedded systems and financial calculations where you need exact decimal precision).
+
+> **Historical Note:** Before IEEE 754 (1985), floating-point arithmetic was a mess. Different computers used different formats — IBM had its own hexadecimal floating-point, DEC had its own format, and Cray supercomputers had yet another. Programs would give different answers on different machines! IEEE 754 standardized everything, and now every CPU in the world uses the same floating-point format.
 
 You don't need to memorize this, but understanding it explains WHY floating-point math has precision issues.
 

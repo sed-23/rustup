@@ -56,6 +56,25 @@ Types in Rust
 | Access by | Index (dot notation): `.0`, `.1` | Index (bracket notation): `[0]`, `[1]` |
 | Growable? | ❌ No | ❌ No (use `Vec` for that) |
 
+### Where Do Compound Types Come From?
+
+**Tuples** were invented in mathematics long before computers. The word comes from Latin: single, double, triple, quadruple, quintuple... N-tuple. In set theory, a tuple is an **ordered sequence** of elements. The key insight is "ordered" — `(3, 5)` is different from `(5, 3)`, unlike a set where `{3, 5}` = `{5, 3}`.
+
+Programming languages borrowed tuples from mathematics:
+- **LISP (1958):** Used linked list pairs (cons cells) as a primitive form of tuples
+- **ML (1973):** Introduced true tuples as a built-in type — Rust's tuples are directly descended from ML's
+- **Python (1991):** Made tuples popular with simple syntax: `(1, "hello", True)`
+- **Haskell (1990):** Uses tuples extensively in its type system
+- **Rust (2015):** Follows the ML/Haskell tradition with typed tuples
+
+**Arrays** evolved from the mathematical concept of a **sequence** or **vector**. They were one of the first data structures in programming:
+- **Fortran (1957):** Had arrays as its ONLY data structure — "Fortran" literally means "Formula Translation," and arrays were essential for scientific computing
+- **C (1972):** Arrays are just pointer arithmetic — `arr[i]` is literally `*(arr + i)`. No bounds checking!
+- **Java (1995):** Arrays are objects on the heap with built-in bounds checking
+- **Rust (2015):** Arrays are stack-allocated with compile-time known size, and bounds checking at runtime
+
+> **Design Philosophy:** Rust's compound types follow a principle of **zero-cost abstraction** — tuples and arrays compile to the exact same memory layout as raw data in C, but with type safety and bounds checking added by the compiler. You get safety without paying a performance price.
+
 ---
 
 ## Tuples
@@ -238,6 +257,40 @@ are inserted after the u8.
 ```
 
 > **Note:** The Rust compiler may **reorder** tuple fields for better alignment, so the actual memory layout might differ from what you'd expect. This is an implementation detail you normally don't need to worry about.
+
+### Deep Dive: Why Does Alignment Matter?
+
+**Memory alignment** is one of those low-level details that most languages hide from you, but understanding it explains why data structures sometimes use more memory than expected.
+
+Modern CPUs don't read memory one byte at a time — they read in **chunks** (called "words"), typically 4 or 8 bytes at a time. For efficiency, data should be aligned to its size:
+
+- An `i32` (4 bytes) should start at an address divisible by 4
+- An `i64` (8 bytes) should start at an address divisible by 8
+- A `bool` (1 byte) can start anywhere
+
+```
+Why alignment matters:
+
+Address: 0  1  2  3  4  5  6  7  8  9  10 11
+         ├──┴──┴──┴──┤  ├──┴──┴──┴──┤
+         CPU Read #1     CPU Read #2
+
+         ALIGNED i32 at address 0:
+         [0][1][2][3]  ← One read gets all 4 bytes ✅
+
+         MISALIGNED i32 at address 1:
+            [1][2][3][4]  ← Spans TWO reads! The CPU must:
+                            1. Read bytes 0-3 (gets bytes 1-3)
+                            2. Read bytes 4-7 (gets byte 4)
+                            3. Combine them
+                            This is 2-3x SLOWER on most CPUs!
+```
+
+Some architectures (like ARM) will actually **crash** on misaligned access. x86 handles it but with a performance penalty. Rust's compiler automatically inserts **padding bytes** to ensure all fields are properly aligned.
+
+This is why `(u8, i32, bool)` takes 8 bytes instead of 6 — the 3 padding bytes after `u8` ensure the `i32` starts at a 4-byte-aligned address. It's wasted space, but it makes access much faster.
+
+> **Comparison:** In C, you can control struct packing with `__attribute__((packed))` to remove padding (at the cost of speed). Rust has `#[repr(packed)]` for the same purpose, but it's rarely used outside of FFI (foreign function interface) code.
 
 ### The Unit Type — Empty Tuple
 
@@ -677,6 +730,52 @@ Array:  ┌──────┬──────┬──────┬──
 
 &arr[1..4] → pointer to arr[1] (0x104), length = 3
 ```
+
+### Deep Dive: Fat Pointers — Rust's Secret Weapon
+
+A regular pointer (like in C) is just an address — a single number pointing to a location in memory. A **fat pointer** carries extra metadata alongside the address.
+
+Rust uses fat pointers in two places:
+1. **Slices** (`&[T]`): pointer + length
+2. **Trait objects** (`&dyn Trait`): pointer + vtable pointer (covered in Stage 8)
+
+```
+Regular pointer (C-style):
+┌──────────┐
+│ address  │  ← 8 bytes on 64-bit
+└──────────┘
+
+Fat pointer (Rust slice):
+┌──────────┬──────────┐
+│ address  │ length   │  ← 16 bytes on 64-bit (8 + 8)
+└──────────┴──────────┘
+```
+
+Why does Rust bundle the length with the pointer? Consider what happens in C:
+
+```c
+// C: the function has NO IDEA how long the array is
+void process(int* arr) {
+    // How many elements? 🤷 No way to know!
+    // arr[100] might be valid, or might be a buffer overflow
+}
+
+// C workaround: pass the length separately
+void process(int* arr, size_t len) {
+    // Now we know, but nothing FORCES the caller to pass the right length
+}
+```
+
+In Rust, the slice carries its length, so bounds checking is always possible:
+```rust
+// Rust: the slice KNOWS its length
+fn process(arr: &[i32]) {
+    // arr.len() always returns the correct length
+    // arr[100] will panic if out of bounds — not silently corrupt memory
+}
+```
+
+This is one of the key ways Rust prevents **buffer overflows** — the vulnerability behind countless security exploits (the Morris Worm, Heartbleed, WannaCry, and many more were caused by reading/writing beyond array bounds in C).
 
 ### Multi-Dimensional Arrays
 

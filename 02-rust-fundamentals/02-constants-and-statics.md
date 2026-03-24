@@ -38,6 +38,32 @@ These values:
 
 Constants solve all three problems by giving permanent, descriptive names to fixed values.
 
+### The History of Constants in Programming
+
+The concept of named constants evolved through programming history:
+
+- **Assembly language (1950s):** Programmers used **EQU** (equate) directives to give names to numbers: `MAX_SIZE EQU 100`. This was purely for readability — the assembler substituted the number during assembly.
+
+- **C (1972):** Originally used `#define MAX_SIZE 100` — a preprocessor text substitution, not a true constant. The preprocessor literally replaced `MAX_SIZE` with `100` before the compiler even saw it. This caused subtle bugs because `#define` has no type checking and no scope. C99 later added `const`, but C's `const` is weaker than Rust's — a C `const` variable still has a runtime address and can be modified through pointers (undefined behavior, but possible).
+
+- **Java (1995):** Uses `final` for constants: `final int MAX_SIZE = 100;`. Java's `final` prevents reassignment but doesn't guarantee compile-time evaluation.
+
+- **C++ (2011):** Added `constexpr` — similar to Rust's `const`, it guarantees compile-time evaluation. Rust's `const` and `const fn` were directly influenced by C++'s `constexpr`.
+
+- **JavaScript (2015):** Added `const` in ES6, but it only prevents reassignment — the value itself can still be mutated if it's an object: `const arr = [1,2,3]; arr.push(4);` works! This is NOT what most people expect from "constant."
+
+- **Rust:** Takes the strongest position: `const` means truly constant — evaluated at compile time, inlined everywhere, no runtime existence. This is as close to mathematical constants as you can get in a programming language.
+
+| Language | Keyword | Compile-time? | Type-safe? | True constant? |
+|----------|---------|---------------|------------|----------------|
+| C | `#define` | Preprocessor | ❌ No | ❌ Text substitution |
+| C | `const` | ❌ Runtime | ✅ Yes | ⚠️ Weak (can be cast away) |
+| C++ | `constexpr` | ✅ Yes | ✅ Yes | ✅ Yes |
+| Java | `final` | ❌ Runtime | ✅ Yes | ⚠️ Only prevents reassignment |
+| JavaScript | `const` | ❌ Runtime | ❌ Dynamic | ⚠️ Only prevents reassignment |
+| Python | UPPERCASE | ❌ Convention | ❌ Dynamic | ❌ Just a naming convention |
+| Rust | `const` | ✅ Yes | ✅ Yes | ✅ Yes |
+
 ---
 
 ## Creating Constants with `const`
@@ -301,6 +327,39 @@ This means:
 - The compiler can optimize aggressively (constant folding, dead code elimination)
 - You **cannot take the address** of a constant in a meaningful way
 
+### Deep Dive: Constant Folding and Propagation
+
+What the compiler does with constants is part of a family of optimizations called **constant folding** and **constant propagation**:
+
+**Constant folding** — evaluating constant expressions at compile time:
+```rust
+const A: i32 = 10;
+const B: i32 = A * 2 + 5;  // Compiler computes: 25
+// In the binary, B is just the number 25 — no multiplication happens at runtime
+```
+
+**Constant propagation** — replacing variable references with their known values:
+```rust
+const MAX: i32 = 100;
+let x = MAX + 50;  
+// Compiler sees: let x = 100 + 50;
+// Then constant folds: let x = 150;
+// The final binary just loads 150 directly
+```
+
+**Dead code elimination** — removing code that can never execute:
+```rust
+const DEBUG: bool = false;
+
+if DEBUG {
+    println!("Debug info...");  // This ENTIRE block is removed from the binary
+}
+```
+
+These optimizations mean that using `const` has **zero runtime cost** — in fact, it can make your code *faster* than using variables, because the compiler has more information to work with.
+
+> **Fun Fact:** Modern compilers are remarkably good at these optimizations. LLVM (the compiler backend Rust uses) can evaluate complex expressions involving hundreds of operations at compile time. Rust's `const fn` feature lets you write arbitrarily complex computations that execute entirely during compilation.
+
 ---
 
 ## Static Variables with `static`
@@ -377,6 +436,46 @@ Program timeline:
 ```
 
 We'll cover lifetimes in depth in Stage 5. For now, just know that `static` means "lives forever."
+
+### Deep Dive: Where Static Data Actually Lives
+
+When your operating system loads a program into memory, it creates several **segments** (regions of memory with different purposes):
+
+```
+Program Memory Map (simplified):
+┌──────────────────────┐  High addresses
+│                      │
+│       Stack          │  ← Local variables (grows downward ↓)
+│         ↓            │
+│                      │
+│       (gap)          │
+│                      │
+│         ↑            │
+│       Heap           │  ← Dynamic allocations (grows upward ↑)
+│                      │
+├──────────────────────┤
+│   BSS Segment        │  ← Uninitialized static data (zeroed)
+├──────────────────────┤
+│   Data Segment       │  ← Initialized static data (your `static` variables!)
+├──────────────────────┤
+│   Read-Only Data     │  ← String literals, const data embedded in binary
+├──────────────────────┤
+│   Text (Code)        │  ← Your compiled machine code
+└──────────────────────┘  Low addresses
+```
+
+When you write `static GREETING: &str = "Hello, World!"`:
+- The string bytes `"Hello, World!"` go into the **Read-Only Data** segment
+- The `static` variable (a pointer + length) goes into the **Data Segment**
+- Both are embedded directly in your compiled binary (the `.exe` or ELF file)
+- When the OS loads your program, these segments are memory-mapped from the file
+
+This is why static data has a fixed address — the address is determined when the program is compiled (or more precisely, when it's linked) and doesn't change during execution. It's also why `static` variables exist for the entire program lifetime — they're part of the binary itself.
+
+> **Comparison with Other Languages:**
+> - **C/C++:** Global and static variables work the same way — stored in the data segment. Rust adopted this directly from C.
+> - **Java:** Has no true static data segment — everything lives on the heap, managed by the garbage collector. "Static" fields in Java are just class-level fields, not memory segment residents.
+> - **Python:** Everything is a heap-allocated object. Python has no concept of compile-time static data.
 
 ---
 
