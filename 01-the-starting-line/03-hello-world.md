@@ -102,6 +102,21 @@ Hello, world!
 
 🎉 **Congratulations!** You just wrote, compiled, and ran your first Rust program!
 
+### The History of "Hello, World!"
+
+The tradition of "Hello, World!" as the first program goes back to **1978**, when Brian Kernighan and Dennis Ritchie published *The C Programming Language*. The very first example in the book was:
+
+```c
+#include <stdio.h>
+main() {
+    printf("hello, world\n");
+}
+```
+
+Since then, virtually every programming language tutorial starts with "Hello, World!" It serves as a **smoke test** — if you can get this to work, your entire toolchain (editor, compiler, linker, runtime) is functioning correctly.
+
+Fun fact: Kernighan actually used "hello, world" (lowercase, no exclamation mark). Over time, it evolved into "Hello, World!" or "Hello, world!" depending on the language community.
+
 ---
 
 ## Dissecting Every Character
@@ -135,7 +150,57 @@ When you run ./main:
   4. When main() ends, the program is done
 ```
 
+#### How Entry Points Work Under the Hood
+
+When you double-click an executable or run it from a terminal, here's the full journey:
+
+1. **The OS loader** reads the binary's headers (ELF on Linux, PE on Windows, Mach-O on macOS) to find the **entry point address** — this is NOT `main` directly
+2. **The C runtime (crt0)** runs first. It sets up the stack, initializes global variables, and sets up signal handlers
+3. **Rust's runtime initialization** runs — this is minimal (unlike Java's JVM startup or Python's interpreter initialization). Rust sets up a panic handler, initializes the thread system, and parses command-line arguments
+4. **Your `main()` function** is finally called
+5. When `main()` returns, cleanup code runs (`Drop` implementations), and the process exits
+
+This is why even a simple Rust binary is a few hundred kilobytes — it includes the C runtime, Rust's minimal runtime, and the standard library components you used. But compared to languages like Go (which includes an entire garbage collector) or Java (which needs the JVM), this overhead is tiny.
+
 > This is the same as C and C++. If you know Python, it's like the code at the top level of your script. If you know JavaScript, think of it like the code that runs when you execute `node index.js`.
+
+#### What Entry Points Look Like in Other Languages
+
+```python
+# Python — no explicit entry point, code runs top-to-bottom
+print("Hello!")
+
+# Convention (not required):
+if __name__ == "__main__":
+    print("Hello!")
+```
+
+```java
+// Java — entry point must be a static method in a class
+public class Main {
+    public static void main(String[] args) {
+        System.out.println("Hello!");
+    }
+}
+```
+
+```go
+// Go — must be in package main
+package main
+func main() {
+    fmt.Println("Hello!")
+}
+```
+
+```c
+// C — the original. Rust follows this convention
+int main(void) {
+    printf("Hello!\n");
+    return 0;  // Return code (0 = success)
+}
+```
+
+Notice that Rust's `main()` looks most like C's, but without the `int` return type and `return 0`. Rust's `main` returns `()` (the unit type, meaning "nothing") by default. Later, you'll learn you can make `main` return `Result` for error handling.
 
 #### Rules for `main`:
 
@@ -174,11 +239,81 @@ println!("{} + {} = {}", 1, 2, 3);              // 4 arguments
 
 A regular Rust function can't do this (function signatures are fixed). Macros can generate code at compile time. We'll cover macros in depth in Stage 21. For now, just remember: **`!` = macro**.
 
+#### Why Macros Instead of Variadic Functions?
+
+In C, `printf` is a variadic function — it accepts any number of arguments:
+```c
+printf("%s is %d years old\n", "Alice", 30);
+```
+
+But C's variadic functions are **type-unsafe**. If you write `printf("%d", "hello")`, C will happily compile it and produce garbage output (or crash). The format string says "integer" but you passed a string — C doesn't check.
+
+Rust's `println!` macro, on the other hand, **checks format strings at compile time**:
+```rust
+println!("{}", 42);        // ✅ Compiles
+// println!("{} {}", 42);  // ❌ Compile error: 2 placeholders but 1 argument
+```
+
+This is only possible because `println!` is a macro — it can inspect the format string during compilation and verify that the number and types of arguments match. A regular function cannot do this.
+
+#### What the Macro Actually Generates
+
+When you write:
+```rust
+println!("Hello, {}!", "world");
+```
+
+The macro expands (at compile time) to something roughly like:
+```rust
+{
+    ::std::io::_print(
+        ::core::fmt::Arguments::new_v1(
+            &["Hello, ", "!\n"],
+            &[::core::fmt::ArgumentV1::new(&"world", ::core::fmt::Display::fmt)]
+        )
+    );
+}
+```
+
+You never need to write this — the macro does it for you. But it's good to know that macros are just code that writes code.
+
 #### The String `"Hello, world!"`
 
 - Text between double quotes `" "` is a **string literal**
 - Rust strings are **UTF-8 encoded** (they support emojis, Chinese characters, etc.)
 - String literals are stored in the program's binary (we'll explore this in Stage 3)
+
+#### Where String Literals Live in Memory
+
+When you write `"Hello, world!"` in your code, the text is baked directly into the compiled binary — it becomes part of the program's **read-only data segment** (also called `.rodata` on Linux or `.rdata` on Windows). Here's the memory layout:
+
+```
+Your compiled binary on disk:
+┌──────────────────────┐
+│   Code (.text)       │  ← Your compiled functions
+├──────────────────────┤
+│   Read-only data     │  ← "Hello, world!" lives HERE
+│   (.rodata)          │    It's embedded in the binary forever
+├──────────────────────┤
+│   Other sections     │
+└──────────────────────┘
+
+At runtime:
+┌──────────────────────┐
+│   Code segment       │  ← Instructions the CPU executes
+├──────────────────────┤
+│   Data segment       │  ← "Hello, world!" is loaded here
+│   (read-only)        │    Address: e.g., 0x00401000
+├──────────────────────┤
+│   Stack              │  ← Local variables  
+├──────────────────────┤
+│   Heap               │  ← Dynamic allocations (Vec, String, Box)
+└──────────────────────┘
+```
+
+The variable in your code is actually a **pointer** (memory address + length) to this read-only data. The type `&str` literally means "a reference to string data stored somewhere." For string literals, that "somewhere" is the binary itself. This is why string literals have the `'static` lifetime — they exist for the entire duration of the program.
+
+This is the same approach C uses for string literals, and it means string literals are essentially **free** — no heap allocation, no cleanup needed. The operating system loads them into memory when the program starts and unmaps them when it ends.
 
 #### The Semicolon `;`
 
@@ -406,6 +541,46 @@ Here's a visual representation of what the compiler does:
 ```
 
 > **LLVM** is a compiler infrastructure project. Rust (and also Clang/C++, Swift, and Julia) use LLVM to generate optimized machine code. You don't need to know about LLVM to use Rust.
+
+### Why LLVM Matters — A Brief History
+
+LLVM (originally "Low Level Virtual Machine") was created by **Chris Lattner** as a research project at the University of Illinois in 2000. The key idea: instead of every language writing its own code generator for every CPU architecture, languages could compile to LLVM's intermediate representation (IR), and LLVM would handle the optimization and machine code generation.
+
+This is why Rust can run on so many platforms (x86-64, ARM, RISC-V, WebAssembly, etc.) without the Rust team writing a code generator for each one — LLVM handles the last mile.
+
+```
+Before LLVM era:
+  Each language × each CPU = separate code generator needed
+  10 languages × 5 architectures = 50 code generators
+
+With LLVM:
+  Each language → LLVM IR → each CPU
+  10 languages × 1 IR + 5 backends = 15 implementations total
+```
+
+Languages using LLVM: Rust, C/C++ (via Clang), Swift, Julia, Kotlin/Native, Crystal, Zig, and many more. They all benefit from LLVM's decades of optimization work.
+
+### How Different Languages Compare: Source to Execution
+
+```
+C / C++ / Rust:
+  Source → Compiler → Machine Code → CPU executes directly
+  💨 Fastest. No middleman at runtime.
+
+Java / C#:
+  Source → Compiler → Bytecode → JVM/CLR interprets or JIT-compiles → CPU
+  🏃 Fast after warmup (JIT learns hot paths). Startup is slower.
+
+Python / Ruby:
+  Source → Interpreter reads line by line → Executes via C runtime
+  🚶 Slowest for compute. Great for glue code and scripting.
+
+JavaScript:
+  Source → V8/SpiderMonkey parses → JIT compiles hot functions → CPU
+  🏃 Surprisingly fast thanks to aggressive JIT. Still has GC pauses.
+```
+
+Rust's approach means your program starts fast (no JIT warmup), runs fast (native code), and exits cleanly (deterministic cleanup). There is no "warm up" period like Java, no interpreter overhead like Python.
 
 ---
 

@@ -49,6 +49,36 @@ rustup (manages everything)
 
 Don't worry about all of these now — just know that one install gets you everything.
 
+### What Is a Compiler, Really?
+
+If you're new to compiled languages, here's what a compiler does: it **translates** human-readable code into machine code (binary instructions) that your CPU can execute directly.
+
+Think of it like a translator at the United Nations:
+- You write your speech in Rust (human language)
+- The compiler translates it to x86-64 or ARM assembly (CPU language)
+- The CPU reads and executes the translated version
+
+The key difference from an interpreter (Python, JavaScript):
+```
+Compiler (Rust, C, Go):
+  1. Read ALL your code
+  2. Translate it ALL to machine code
+  3. Produce an executable file
+  4. You run the executable — the compiler is not involved anymore
+  
+  Analogy: A translator translates a whole book, then you read the translated book.
+
+Interpreter (Python, Ruby):
+  1. Read one line of your code
+  2. Execute it immediately
+  3. Read the next line
+  4. Execute it... (repeat)
+  
+  Analogy: A translator sits next to you and translates each sentence as you read.
+```
+
+The compiled approach is faster because the translation happens once (at compile time), not every time you run the program. It also allows the compiler to see your entire program and optimize globally — an interpreter can only see one line at a time.
+
 ---
 
 ## Installing on Windows
@@ -120,6 +150,27 @@ Rust on Windows needs the **Microsoft C++ Build Tools**. If you don't have them:
 4. Install it (this is the biggest download, ~1-2 GB)
 
 > **Why does Rust need C++ tools?** Rust links against the C standard library, and the Windows linker comes with Visual C++. This is a one-time setup.
+
+#### What is a Linker and Why Does Rust Need One?
+
+A **linker** is a program that combines multiple compiled files into a single executable. Here's why it's necessary:
+
+When you write `println!("Hello")`, the actual "print to screen" code lives in the operating system's C standard library (`libc` on Linux/macOS, `msvcrt` on Windows). Your compiled Rust code contains a **reference** to this function, but doesn't include the actual implementation.
+
+The linker resolves these references:
+
+```
+Your code (compiled):        System libraries:
+┌─────────────────┐         ┌──────────────────────┐
+│ main:           │         │ write():              │
+│   call write()──┼────────→│   [actual code to     │
+│                 │  linker │    write to screen]    │
+└─────────────────┘ connects└──────────────────────┘
+```
+
+Without a linker, your program would be full of unresolved references — calls to functions that exist somewhere else. The linker finds those functions and wires everything together into a single, self-contained executable file.
+
+On Windows, the linker comes bundled with Visual C++ Build Tools (`link.exe`). On Linux, it's part of `binutils` (`ld`). On macOS, it comes with Xcode Command Line Tools.
 
 ### Step 4: Restart Your Terminal
 

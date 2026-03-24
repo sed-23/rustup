@@ -184,6 +184,19 @@ A linter is a tool that analyzes your code for:
 
 Think of Clippy as a code review from an experienced Rust developer — automated and instant.
 
+#### The History of Linters
+
+The term "lint" comes from a tool written by **Stephen C. Johnson** at Bell Labs in 1978 for the C programming language. Just as a lint roller picks up small fibers from clothing, the `lint` program picked up small errors from C code.
+
+The original `lint` caught common C bugs like:
+- Calling a function with the wrong number of arguments (C didn't check this!)
+- Using a variable before initialization
+- Unreachable code
+
+Over time, linting became standard practice in every language: ESLint (JavaScript), Pylint/flake8 (Python), RuboCop (Ruby), golint (Go). Rust's Clippy was created in 2015 by **Manish Goregaokar** and named after Microsoft's infamous Office Assistant. The irony is intentional — unlike the annoying Clippy paperclip that offered useless advice, Rust's Clippy provides genuinely helpful suggestions.
+
+Clippy currently has **over 700 lints** and is considered one of the most comprehensive linters in any language ecosystem.
+
 ### How to Use
 
 ```bash
@@ -275,6 +288,23 @@ fn my_function() -> i32 {
 ## rust-analyzer — Your IDE Superpower
 
 `rust-analyzer` is the **Language Server Protocol (LSP)** implementation for Rust. It powers the Rust experience in VS Code, Neovim, Helix, and other editors.
+
+### What is LSP? — A Revolution in Editor Tooling
+
+Before LSP, every editor needed its own plugin for every language. Vim needed a separate Vim-Python plugin, a Vim-Java plugin, etc. VS Code needed separate TypeScript support, separate C++ support, etc. This was an $M \times N$ problem: $M$ editors times $N$ languages = $M \times N$ separate implementations.
+
+**The Language Server Protocol (LSP)** was invented by Microsoft in 2016 (originally for TypeScript in VS Code). The idea: languages implement a **single server** that speaks a standard protocol, and editors implement a **single client**. Now it's an $M + N$ problem instead of $M \times N$:
+
+```
+Before LSP:                         After LSP:
+  Editor A ──── Language 1          Editor A ──┐
+  Editor A ──── Language 2          Editor B ──┤── LSP ──┬── Language Server 1
+  Editor B ──── Language 1          Editor C ──┘         ├── Language Server 2
+  Editor B ──── Language 2                               └── Language Server 3
+  (M × N connectors)                (M + N connectors)
+```
+
+`rust-analyzer` is Rust's LSP server. It was created by **Aleksey Kladov** (matklad) starting in 2018 as a replacement for the older RLS (Rust Language Server). rust-analyzer is arguably the best LSP implementation of any language — it's fast, accurate, and feature-rich.
 
 ### What Does It Do?
 

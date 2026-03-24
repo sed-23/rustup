@@ -40,6 +40,46 @@ More Control                                              More Convenience
 
 Most languages force you to choose: low-level control OR high-level convenience. Rust gives you both.
 
+### Understanding the Spectrum: How Languages Talk to Hardware
+
+To understand where languages sit on this spectrum, let's trace what happens when you write `x = 5 + 3`:
+
+**Assembly** (raw CPU instructions):
+```nasm
+mov eax, 5       ; Put 5 in register EAX
+add eax, 3       ; Add 3 to EAX (now EAX = 8)
+mov [rbp-4], eax ; Store result at memory address rbp-4
+```
+You specify the exact CPU registers, the exact memory addresses. Total control, total complexity.
+
+**C** (one thin layer above assembly):
+```c
+int x = 5 + 3;  // Compiler chooses the register and memory location
+```
+The compiler translates this to something very close to the assembly above. You still think in terms of memory addresses and pointers, but the compiler handles register allocation.
+
+**Rust** (same performance as C, but with safety):
+```rust
+let x = 5 + 3;  // Also compiles to nearly the same assembly as C
+// But: the compiler also checks ownership, borrowing, and lifetimes
+```
+
+**Java** (layer of abstraction — JVM):
+```java
+int x = 5 + 3;  // Compiles to JVM bytecode: iconst_5, iconst_3, iadd, istore_1
+// At runtime, the JVM interprets or JIT-compiles this bytecode
+```
+
+**Python** (many layers of abstraction):
+```python
+x = 5 + 3  # At runtime: creates int object for 5, creates int object for 3,
+            # calls __add__ method, creates new int object for 8,
+            # creates string "x" in namespace dict, maps "x" → int(8)
+```
+A simple `5 + 3` in Python involves dictionary lookups, object creation, method dispatch, and reference counting. This is why Python is ~100x slower for arithmetic.
+
+The revolutionary thing about Rust is that it generates the same efficient code as C while providing the kind of safety guarantees normally associated with languages much further right on the spectrum.
+
 ---
 
 ## Syntax Comparison — At a Glance
@@ -398,6 +438,33 @@ Rust:    ~0.3 seconds (150x faster!)
 
 This isn't a Rust-specific trick — it's the fundamental difference between an interpreted language with a GIL and a compiled language with native machine code.
 
+#### Why Exactly is Python Slower? — A Deep Dive
+
+The speed difference isn't just "interpreted vs compiled." It's about what happens at every single step:
+
+**Memory layout:**
+```
+Python integer "42":                Rust i32 "42":
+┌─────────────────────┐            ┌──────┐
+│ ob_refcnt: 8 bytes  │            │  42  │  ← Just 4 bytes. That's it.
+│ ob_type: 8 bytes    │            └──────┘
+│ ob_size: 8 bytes    │
+│ ob_digit: 4+ bytes  │            Total: 4 bytes
+└─────────────────────┘
+Total: 28+ bytes for a single number!
+```
+
+A Python integer is a full **heap-allocated object** with a reference count, a type pointer, and a size field. Rust's `i32` is just 4 bytes on the stack — no overhead at all.
+
+**Dictionary lookups:**
+When Python executes `x = 5`, it does a dictionary lookup to map the string `"x"` to the value. When you access `x`, it does another dictionary lookup. Rust's `x` is just a memory address known at compile time — no lookups needed at runtime.
+
+**Type checking:**
+Python checks types at runtime: "Is this thing I'm about to add actually a number?" Rust checks types at compile time and erases them — the CPU just sees memory addresses and arithmetic instructions.
+
+**The GIL (Global Interpreter Lock):**
+CPython has a lock that prevents multiple threads from executing Python bytecode simultaneously. This means Python can't truly use multiple CPU cores for computation. Rust has no such limitation — you get real parallelism.
+
 ### When to Use Each
 
 | Situation | Use Python | Use Rust |
@@ -584,6 +651,48 @@ These are things you won't find (in the same way) in other languages:
 | **Cargo** | Build, package, test, format, lint — one tool | No fragmented tooling ecosystem |
 
 We'll learn ALL of these concepts in the upcoming stages!
+
+### The "Billion Dollar Mistake" — Why No Null Matters
+
+In 1965, **Sir Tony Hoare** invented null references for the ALGOL W language. In 2009, he called it his "billion dollar mistake":
+
+> "I call it my billion-dollar mistake. It was the invention of the null reference in 1965... This has led to innumerable errors, vulnerabilities, and system crashes, which have probably caused a billion dollars of pain and damage in the last forty years."
+
+Every language that inherited null (C, C++, Java, C#, JavaScript, Python `None`, Go `nil`) inherited this problem. The issue: you can never be sure a value isn't null without checking, and the compiler doesn't force you to check.
+
+Rust's solution (`Option<T>`) is based on ideas from **ML** (1973) and **Haskell** (1990), where the concept of "a value that might not exist" is represented as a type:
+
+```
+Haskell:    Maybe a = Nothing | Just a
+OCaml:      type 'a option = None | Some of 'a  
+Rust:       enum Option<T> { None, Some(T) }
+```
+
+The key insight: by making "absence" part of the type system, the compiler can force you to handle both cases. You literally cannot access the inner value without first checking that it exists. NullPointerException becomes impossible.
+
+### Where Do These Concepts Come From? — A Family Tree
+
+```
+1960s:  LISP (garbage collection, closures)
+  │
+1970s:  ML (pattern matching, algebraic types, type inference)
+  │     C (manual memory, pointers, systems programming)
+  │
+1980s:  C++ (RAII, zero-cost abstractions, move semantics)
+  │     Haskell (typeclasses → Rust traits, monads → Result/Option)
+  │
+1990s:  Java (GC, no pointer arithmetic)
+  │     OCaml (practical ML with fast compilation)
+  │
+2000s:  Cyclone (region-based memory → Rust lifetimes)
+  │     C++ smart pointers (unique_ptr → Rust ownership)
+  │
+2006:   Graydon Hoare starts combining ALL the above into Rust
+  │
+2015:   Rust 1.0 — the synthesis is complete
+```
+
+Rust is a **synthesis language** — it combines proven ideas from 50 years of programming language research into a single, practical language. The genius isn't in any single feature, but in how they all fit together to provide safety AND performance simultaneously.
 
 ---
 
