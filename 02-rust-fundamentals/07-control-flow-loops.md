@@ -73,6 +73,41 @@ while:  "Keep going while this is true"
 for:    "Do this for each item in the sequence"
 ```
 
+### The History of Loops in Computing
+
+Loops are one of the fundamental reasons computers are useful — the ability to repeat instructions is what separates a computer from a calculator.
+
+**Machine code (1940s):** The earliest "loop" was a **branch instruction** that jumped backward in the program. The programmer manually calculated the memory address to jump to. Getting it wrong meant the program ran forever or crashed.
+
+**Fortran (1957):** Introduced the `DO` loop — the ancestor of all `for` loops:
+```fortran
+DO 10 I = 1, 100
+    X = X + I
+10 CONTINUE
+```
+The number `10` is a line label — the loop body extends from the `DO` to the `CONTINUE` labeled `10`.
+
+**C (1972):** Introduced the three-part `for` loop that became ubiquitous:
+```c
+for (int i = 0; i < 100; i++) {
+    // The most common loop in programming history
+}
+```
+
+**Python (1991):** Made `for` about iteration, not counting:
+```python
+for item in collection:  # Iterate over items directly
+    process(item)
+```
+
+**Rust (2015):** Follows Python's philosophy (iterator-based `for`) but adds:
+- `loop` — a dedicated infinite loop (safer than `while (true)`)
+- `while let` — pattern-matching loops (from ML tradition)
+- `break` with values — loops as expressions (unique to Rust!)
+- Loop labels — nested loop control
+
+> **Why Three Loop Types?** Many languages have only `for` and `while` (C, Python, Java). Rust added `loop` as a separate construct because `while true { }` is a pattern — the compiler can reason about `loop` more effectively. It knows the loop ONLY exits via `break`, which enables the "return value from loop" feature and better optimization.
+
 ---
 
 ## `loop` — Infinite Loop
@@ -232,6 +267,40 @@ fn main() {
     // Connected! (after 3 attempts)
 }
 ```
+
+### Deep Dive: Loops as Expressions — Rust's Unique Feature
+
+The ability to return values from `loop` with `break value` is one of Rust's unique features. No other mainstream systems programming language has this.
+
+**Why is this useful?** It eliminates a common pattern of initializing a "result" variable before the loop:
+
+```rust
+// Without loop-as-expression (traditional approach):
+let mut result = String::new();  // Must declare outside the loop
+loop {
+    let line = read_line();
+    if line == "quit" {
+        result = format!("Received {} lines", count);
+        break;
+    }
+}
+// result is used here
+
+// With loop-as-expression (Rust way):
+let result = loop {  // result is initialized from loop's return value
+    let line = read_line();
+    if line == "quit" {
+        break format!("Received {} lines", count);  // 🎯 Direct
+    }
+};
+```
+
+The second version is better because:
+1. `result` doesn't need to be `mut`
+2. `result` is guaranteed to be initialized (the compiler proves all `break` paths provide a value)
+3. The intent is clearer — "this loop exists to compute a result"
+
+This is another example of Rust's **expression-oriented** design (inherited from ML/Haskell), where constructs produce values rather than just executing statements.
 
 ### Skipping Iterations with `continue`
 
@@ -849,6 +918,47 @@ for val in &arr {
 ```
 
 > **Real-World Practice:** Always prefer `for` over `while` for iterating over collections. It's both safer AND faster.
+
+### Deep Dive: How Rust's Iterator Optimization Works
+
+Rust's `for` loops are fast because of how `Iterator` works under the hood. When you write:
+
+```rust
+for x in &numbers {
+    sum += x;
+}
+```
+
+The compiler desugars this to:
+```rust
+let mut iter = (&numbers).into_iter();
+loop {
+    match iter.next() {
+        Some(x) => { sum += x; }
+        None => break,
+    }
+}
+```
+
+This looks like it should be slower — there's a `match` on every iteration, checking for `None`. But LLVM is incredibly good at optimizing this away. Through a process called **inlining** and **dead code elimination**, the final machine code looks like:
+
+```asm
+; Simplified x86-64 assembly for summing an array:
+loop_start:
+    add eax, [rsi]        ; Add current element to sum
+    add rsi, 4            ; Move pointer to next element
+    cmp rsi, rdi          ; Have we reached the end?
+    jne loop_start        ; If not, continue
+```
+
+No `Option`. No `match`. No function calls. Just raw pointer arithmetic — exactly what hand-written C would produce. This is what **zero-cost abstraction** means in practice: the high-level Rust code compiles to the same machine code as low-level pointer manipulation.
+
+The key enablers are:
+1. **Monomorphization** — generic code is compiled separately for each concrete type
+2. **Inlining** — `next()` calls are replaced with their bodies
+3. **LLVM optimization passes** — dead branches are removed, bounds checks are hoisted out of loops
+
+> **Benchmark Evidence:** The official Rust documentation notes that iterator-based loops often match or exceed hand-optimized C code. In some cases, LLVM can auto-vectorize iterator chains (using SIMD instructions) more easily than manual loops, because the iterator structure makes data flow analysis easier for the optimizer.
 
 ### Loop Unrolling
 

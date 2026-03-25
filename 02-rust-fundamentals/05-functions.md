@@ -53,6 +53,24 @@ fn main() {
 }
 ```
 
+### The History of Functions in Computing
+
+The concept of a "function" in programming has deep roots:
+
+**Mathematics (centuries ago):** Functions like $f(x) = x^2$ map inputs to outputs. This mathematical idea directly inspired programming functions.
+
+**Lambda Calculus (1930s):** Alonzo Church invented lambda calculus — a formal system where EVERYTHING is a function. This became the theoretical foundation for functional programming languages. When you see closures in Rust (Stage 6), they're direct descendants of Church's lambdas.
+
+**Subroutines (1940s-50s):** The earliest computers had **subroutines** — reusable blocks of code you could "jump to" and "return from." Grace Hopper and her team pioneered the concept while working on the Harvard Mark I. These were essentially functions without parameters or return values.
+
+**Fortran (1957):** Introduced `FUNCTION` and `SUBROUTINE` — the first time functions appeared in a high-level language. Fortran distinguished between functions (which return values) and subroutines (which don't). Rust unifies these — a function that returns `()` is effectively a subroutine.
+
+**C (1972):** Made functions the primary organizational unit. EVERY piece of code in C lives inside a function. Rust follows this model — there are no standalone statements outside of functions (unlike Python or JavaScript).
+
+**Modern languages:** Functions have evolved to support closures, higher-order functions, generics, and async/await. Rust's function system incorporates all of these, making it one of the most powerful in any systems programming language.
+
+> **Why `fn`?** Rust uses `fn` instead of `function`, `def`, `func`, or `fun`. This follows Rust's philosophy of being concise — you type `fn` hundreds of times in a project, so a shorter keyword saves effort. ML uses `fun`, Haskell uses implicit function definitions, Go uses `func`, and Python uses `def`. Rust's `fn` is closest to ML's tradition.
+
 ---
 
 ## Defining and Calling Functions
@@ -461,6 +479,50 @@ fn main() {
 | `greet()` | Expression | ✅ `()` |
 | `x + 1;` | Statement (expression + `;`) | Discards value |
 
+### Why is Everything an Expression? The Functional Influence
+
+Rust's expression-based design is inherited from **ML** (Meta Language, 1973), which inspired both Haskell and Rust. In ML-family languages, almost everything produces a value — `if/else`, `match`, blocks, and even loops.
+
+This is different from **C-family languages** (C, Java, JavaScript), which distinguish sharply between statements and expressions:
+
+```c
+// C: if is a STATEMENT — cannot produce a value
+int x;
+if (condition) {
+    x = 5;
+} else {
+    x = 10;
+}
+
+// C: ternary operator added as an EXPRESSION workaround
+int x = condition ? 5 : 10;
+```
+
+```rust
+// Rust: if IS an expression — naturally produces a value
+let x = if condition { 5 } else { 10 };
+// No need for a separate ternary operator!
+```
+
+This design makes Rust code more concise and reduces mutable variables. Instead of declaring a variable and then assigning to it inside an `if`, you can compute the value directly:
+
+```rust
+// Imperative style (more variables, more mutation):
+let temperature = get_temp();
+let mut description = String::new();
+if temperature > 30 {
+    description = String::from("hot");
+} else {
+    description = String::from("cool");
+}
+
+// Expression style (no mutation needed):
+let temperature = get_temp();
+let description = if temperature > 30 { "hot" } else { "cool" };
+```
+
+The expression-based approach is one of Rust's most elegant features — it reduces the need for `mut` and makes code flow more naturally. This is also why the semicolon matters so much in Rust: it's the difference between "this has a value" and "throw the value away."
+
 ---
 
 ## Function Signatures as Documentation
@@ -585,6 +647,58 @@ fn infinite() {
 }
 // thread 'main' has overflowed its stack
 ```
+
+### Deep Dive: Calling Conventions — How Functions Really Talk to Each Other
+
+When one function calls another, the CPU follows a **calling convention** — a set of rules about how to pass arguments, return values, and clean up the stack. This is the low-level mechanism behind function calls.
+
+On x86-64 (the most common desktop/server architecture), the **System V AMD64 ABI** (used on Linux/macOS) works like this:
+
+```
+1. First 6 integer arguments go into CPU registers:
+   Arg 1 → RDI register
+   Arg 2 → RSI register
+   Arg 3 → RDX register
+   Arg 4 → RCX register
+   Arg 5 → R8 register
+   Arg 6 → R9 register
+   
+2. Additional arguments go on the stack
+
+3. Return value goes into RAX register
+
+4. The CALL instruction:
+   - Pushes the return address onto the stack
+   - Jumps to the function's code
+
+5. The RET instruction:
+   - Pops the return address
+   - Jumps back to the caller
+```
+
+This means for a simple function like `fn add(a: i32, b: i32) -> i32`:
+- `a` goes into the `EDI` register (lower 32 bits of RDI)
+- `b` goes into the `ESI` register (lower 32 bits of RSI)
+- The result comes back in `EAX` (lower 32 bits of RAX)
+- If the function is small enough, it may be **inlined** — the compiler copies the function body directly into the caller, eliminating the call overhead entirely!
+
+> **Why This Matters:** Understanding calling conventions explains why passing a few small arguments is practically free (they go in registers, not memory), while passing huge structs by value can be slow (they must be copied). This is another reason Rust encourages passing references (`&T`) instead of values for large types.
+
+### Stack Overflow: Why There's a Limit
+
+The stack is typically 8 MB on Linux and 1 MB on Windows by default. Each function call consumes some stack space for its local variables and bookkeeping. For most programs, this is more than enough — but recursive functions can exhaust it:
+
+```
+factorial(10000):
+  10000 stack frames × ~50 bytes each ≈ 500 KB (fine)
+
+factorial(1000000):
+  1000000 stack frames × ~50 bytes each ≈ 50 MB (stack overflow!)
+```
+
+This is why iterative solutions (using loops) are often preferred over recursive ones for large inputs — loops don't create new stack frames.
+
+> **Fun Fact:** Some languages (like Haskell and Scheme) guarantee **tail call optimization** (TCO) — if a function's last action is calling itself, the compiler reuses the same stack frame. Rust does NOT guarantee TCO, though LLVM may apply it as an optimization in some cases. If you need guaranteed deep recursion in Rust, use explicit iteration or a `Vec` as a manual stack.
 
 ---
 

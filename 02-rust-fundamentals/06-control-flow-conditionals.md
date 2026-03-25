@@ -51,6 +51,22 @@ Rust has two main conditional constructs:
 1. **`if` / `else if` / `else`** — for simple branching
 2. **`match`** — for complex pattern matching
 
+### The History of Control Flow
+
+Control flow has a fascinating history in programming:
+
+**Early computers (1940s-50s):** Had only **GOTO** — an unconditional jump to any line in the program. Programs looked like spaghetti, with execution jumping all over the place. Debugging was a nightmare.
+
+**Structured Programming (1960s-70s):** In 1968, Edsger Dijkstra published his famous letter **"Go To Statement Considered Harmful,"** arguing that programs should use structured control flow — `if/else`, `while`, and `for` — instead of `goto`. This was revolutionary and controversial at the time. Some programmers resisted fiercely, but structured programming eventually won. Every modern language follows Dijkstra's principles.
+
+**Pattern Matching (1970s-80s):** ML (1973) introduced **pattern matching** — a more powerful alternative to `if/else` chains and `switch` statements. Instead of checking one condition at a time, pattern matching destructures data and checks all possible cases at once. Rust's `match` is a direct descendant of ML's pattern matching.
+
+**Why Rust Has Both:** Rust provides `if/else` for simple boolean decisions (from the C tradition) AND `match` for pattern matching (from the ML tradition). This gives you the right tool for each situation:
+- Simple yes/no decisions → `if/else`
+- Multiple cases with destructuring → `match`
+
+> **Fun Fact:** Rust has no `switch` statement. The `match` expression is strictly more powerful than `switch` because it supports patterns, destructuring, guards, and exhaustiveness checking — features that `switch` in C/Java/JavaScript lacks.
+
 ---
 
 ## The `if` Expression
@@ -609,6 +625,46 @@ match value {
 - `_` is the **wildcard** pattern — matches anything
 - Arms are checked top to bottom — first match wins
 
+### How `match` Compares to `switch` in Other Languages
+
+Rust's `match` is far more powerful than the `switch` statement found in C, Java, or JavaScript:
+
+**C/Java `switch` — Limited and Error-Prone:**
+```c
+// C switch: only works with integers and chars
+switch (day) {
+    case 1: printf("Monday"); break;     // MUST include break!
+    case 2: printf("Tuesday"); break;
+    case 3: printf("Wednesday"); break;
+    default: printf("Unknown");
+}
+// Forget a break? Code "falls through" to the next case — a common bug
+// No exhaustiveness checking — missing cases are silently ignored
+```
+
+**Rust `match` — Powerful and Safe:**
+```rust
+// Works with any type, not just integers
+// No fall-through — each arm is independent
+// Exhaustiveness checking — compiler FORCES you to handle all cases
+match day {
+    "Monday" => println!("Start of week"),
+    "Friday" => println!("Almost weekend!"),
+    _ => println!("Regular day"),
+}
+```
+
+| Feature | C/Java `switch` | Rust `match` |
+|---------|-----------------|--------------|
+| Fall-through | ✅ Yes (bug-prone) | ❌ No (safe) |
+| Exhaustive | ❌ No | ✅ Yes (compiler enforced) |
+| Pattern matching | ❌ No | ✅ Yes (destructuring, ranges, guards) |
+| Works with types | Integers, chars, enums | Any type with patterns |
+| Returns a value | ❌ No (statement) | ✅ Yes (expression) |
+| Binding variables | ❌ No | ✅ Yes (`n @ 1..=10`) |
+
+The fall-through problem in C's `switch` is responsible for countless bugs. Apple's infamous **"goto fail" vulnerability** (2014) was partly caused by confusing control flow structure. Rust's `match` makes such bugs impossible.
+
 ### Multi-Line Arms
 
 Use `{}` for arms with multiple statements:
@@ -854,6 +910,50 @@ fn abs_normal(x: i32) -> i32 {
 ```
 
 > **Real-World Practice:** Don't optimize branches prematurely. The compiler and CPU are very good at this. Focus on writing clear, readable code. Profile first, optimize later.
+
+### How `match` Compiles Under the Hood
+
+When LLVM (Rust's compiler backend) sees a `match` expression, it can use several strategies depending on the patterns:
+
+**1. Jump Table (for dense integer ranges):**
+```rust
+match x {
+    0 => action_a(),
+    1 => action_b(),
+    2 => action_c(),
+    3 => action_d(),
+    _ => default_action(),
+}
+// Compiles to a jump table: an array of addresses
+// The CPU loads address[x] and jumps to it — O(1), no comparisons needed!
+```
+
+**2. Binary Search (for sparse values):**
+```rust
+match x {
+    1 => ...,
+    50 => ...,
+    200 => ...,
+    999 => ...,
+    _ => ...,
+}
+// Compiles to a binary search tree of comparisons — O(log n)
+```
+
+**3. Sequential Comparison (for complex patterns):**
+```rust
+match x {
+    n if n < 0 => ...,         // Requires comparison
+    0 => ...,
+    n if n % 2 == 0 => ...,   // Requires computation
+    _ => ...,
+}
+// Compiles to sequential if/else chain — O(n), but usually n is small
+```
+
+This is why `match` is often *faster* than `if/else if/else` for many cases — the compiler can choose the optimal strategy automatically. With `if/else` chains, the compiler has less information about the overall structure and may not generate a jump table.
+
+> **Insight:** Exhaustiveness checking isn't just about safety — it also helps the compiler optimize. When the compiler knows ALL cases are handled, it can eliminate impossible branches and generate tighter machine code. This is another example of Rust's philosophy: safety features that ALSO help performance.
 
 ---
 
