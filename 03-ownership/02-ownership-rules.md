@@ -58,6 +58,63 @@ That's it. Three rules. Everything about Rust's memory model — every borrow ch
 
 ---
 
+### The Origin of Ownership — From Linear Types to Rust
+
+Rust's ownership system didn't appear out of thin air. It's the culmination of **40 years** of programming language research, distilled into three elegant rules. Understanding where these ideas came from helps you appreciate *why* Rust works the way it does.
+
+**The Academic Roots: Linear Logic (1987)**
+
+In 1987, French logician **Jean-Yves Girard** published his work on *linear logic* — a system where every resource (proposition) must be used **exactly once**. You can't duplicate it, and you can't ignore it. This was a radical departure from classical logic, where you can freely copy and discard assumptions.
+
+```
+Classical Logic:    A → A ∧ A      (you can duplicate freely)
+Linear Logic:       A ⊸ A          (you use it exactly once — then it's gone)
+```
+
+This idea directly maps to memory: a heap allocation is a resource that must be freed **exactly once** — not zero times (leak), not twice (double free).
+
+**Linear and Affine Types in PL Research (1990s)**
+
+Researchers in the 1990s applied Girard's ideas to type systems:
+
+| Type Discipline | Rule | Analogy |
+|----------------|------|---------|
+| **Linear types** | Must be used *exactly once* | A concert ticket — must attend, can't copy |
+| **Affine types** | May be used *at most once* | A coupon — use it or throw it away |
+| **Relevant types** | Must be used *at least once* | A task — must complete it, can delegate |
+| **Unrestricted** | Use any number of times | A PDF — copy and share freely |
+
+Rust's ownership is an **affine type system** — you can use a value at most once (you may drop it without reading). The compiler tracks this statically.
+
+**Key Predecessors That Shaped Rust**
+
+```
+ Timeline of Ideas Leading to Rust's Ownership
+ ─────────────────────────────────────────────────────────────────
+ 1984  │  C++ RAII (Stroustrup) — tie resource lifetime to scope
+ 1987  │  Linear Logic (Girard) — resources used exactly once
+ 1990s │  Linear/affine type research in academia
+ 2001  │  Cyclone (Cornell) — safe C dialect with regions & ownership
+ 2006  │  Graydon Hoare starts Rust as a personal project
+ 2011  │  C++11 adds unique_ptr & move semantics
+ 2012  │  Rust adopts the borrow checker (Niko Matsakis)
+ 2015  │  Rust 1.0 released — ownership is the default
+ ─────────────────────────────────────────────────────────────────
+```
+
+- **C++ RAII (1984):** Bjarne Stroustrup pioneered the idea that constructors acquire resources and destructors release them. Rust's `Drop` trait is a direct descendant.
+- **Cyclone (2001–2006):** An experimental safe dialect of C developed at Cornell. It introduced *regions* (lexical scopes that own memory) and *unique pointers* that couldn't be aliased. Cyclone proved safe manual memory management was possible — but its syntax was unwieldy.
+- **C++11 `unique_ptr` (2011):** The closest mainstream equivalent to Rust ownership. A `unique_ptr` is a non-copyable smart pointer that frees memory when destroyed. But it's **opt-in** — raw pointers and manual `delete` still exist.
+
+**Rust's Key Insight**
+
+Rust took the radical step of making affine types **the default**, not opt-in. Every value in Rust is owned and moved unless you explicitly opt into copying (`Clone`/`Copy`) or sharing (`Rc`, `Arc`). This inversion — safe by default, unsafe by choice — is what makes Rust unique among systems languages.
+
+> *"We didn't invent any new science. We just applied existing research in a way that no production language had done before."*
+> — Paraphrasing the Rust team's design philosophy
+
+---
+
 ## Rule 1: Each Value Has Exactly One Owner
 
 ### What Is an "Owner"?
@@ -293,6 +350,117 @@ fn read_file() -> Result<String, std::io::Error> {
 ```
 
 In C, if you forget to call `fclose()`, the file stays open until the program exits. In Rust, it's impossible to forget — `drop` handles it.
+
+---
+
+### RAII Deep Dive — Why Tying Resources to Scope is Revolutionary
+
+RAII stands for **Resource Acquisition Is Initialization** — arguably the worst name for one of the best ideas in programming. The name suggests it's about *initialization*, but it's really about **guaranteed cleanup**. A better name would be **Scope-Bound Resource Management (SBRM)**, but RAII stuck for historical reasons.
+
+**Before RAII: The C Nightmare**
+
+In C, you acquire resources manually and must remember to release them. When multiple resources are involved, you get the infamous "goto cleanup" pattern:
+
+```c
+// C: Manual resource management — error-prone and ugly
+int process_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char *buf = malloc(1024);
+    if (!buf) {
+        fclose(f);          // Must remember to close f!
+        return -1;
+    }
+
+    int *result = malloc(sizeof(int) * 100);
+    if (!result) {
+        free(buf);           // Must free buf!
+        fclose(f);           // Must close f!
+        return -1;
+    }
+
+    // ... do work ...
+
+    free(result);   // Don't forget!
+    free(buf);      // Don't forget!
+    fclose(f);      // Don't forget!
+    return 0;
+}
+// Forget ANY of those fclose/free calls → resource leak
+// Get the ORDER wrong → use-after-free
+```
+
+Every early return path must manually clean up every previously acquired resource. Miss one? You've got a leak. Get the order wrong? Undefined behavior.
+
+**The try/finally Approach (Java, Python)**
+
+Garbage-collected languages use try/finally for non-memory resources:
+
+```python
+# Python: try/finally — verbose and easy to get wrong
+def process_file(path):
+    f = open(path, 'r')
+    try:
+        buf = allocate_buffer()
+        try:
+            result = do_work(f, buf)
+        finally:
+            release_buffer(buf)    # Nested try/finally for each resource
+    finally:
+        f.close()
+```
+
+This works, but every resource adds another level of nesting. Python's `with` statement helps, but it's syntax sugar over the same idea — and only works for objects that implement `__enter__`/`__exit__`.
+
+**C++ Destructors: The First Real RAII**
+
+C++ introduced destructors — functions called automatically when an object leaves scope:
+
+```cpp
+// C++: RAII with destructors
+void process_file(const std::string& path) {
+    auto f = std::ifstream(path);           // Opens file
+    auto buf = std::vector<char>(1024);     // Allocates buffer
+    auto result = std::vector<int>(100);    // Allocates result
+
+    // ... do work ...
+
+}   // ALL three are cleaned up automatically, in reverse order
+    // Even if an exception is thrown!
+```
+
+But C++ RAII has a flaw: you can **bypass it** with raw `new`/`delete`, and the compiler won't stop you.
+
+**Rust's `Drop` Trait: RAII Perfected**
+
+Rust takes RAII and makes it **inescapable**. There's no `new`/`delete`. No manual memory management in safe code. The `Drop` trait is always called:
+
+```
+  Comparison of Cleanup Strategies
+ ┌─────────────┬──────────────┬─────────────────┬──────────────────┐
+ │ Language    │ Mechanism    │ Deterministic?  │ Guaranteed?      │
+ ├─────────────┼──────────────┼─────────────────┼──────────────────┤
+ │ C           │ manual free  │ ✅ Yes          │ ❌ No (forget)   │
+ │ Java        │ GC+finalizer │ ❌ No           │ ❌ No (delayed)  │
+ │ Python      │ GC+__del__   │ ❌ No (CPython:  │ ❌ No (cycles)   │
+ │             │              │    mostly yes)  │                  │
+ │ C++         │ destructors  │ ✅ Yes          │ ⚠️  Bypassable   │
+ │ Rust        │ Drop trait   │ ✅ Yes          │ ✅ Yes (in safe) │
+ └─────────────┴──────────────┴─────────────────┴──────────────────┘
+```
+
+Java's finalizers are especially problematic — they run at an unpredictable time (maybe never!), on a random GC thread, and the JVM doesn't even guarantee they'll execute before the program exits. Java 9 deprecated `finalize()` for this reason.
+
+**Real-World Analogy**
+
+Think of RAII like a **hotel with automatic checkout**:
+
+- **C style:** You must call the front desk to check out. Forget, and you get charged forever.
+- **Java style:** A housekeeper *eventually* checks your room. Maybe today, maybe next week. Maybe never.
+- **Rust style:** The moment you step outside your room for the last time, the door locks behind you, the room is cleaned, and your bill is settled. Automatic. Deterministic. Guaranteed.
+
+This is why Rust programs can manage thousands of file handles, network sockets, and database connections without ever leaking one — the ownership system makes cleanup a structural guarantee, not a programmer discipline.
 
 ---
 
@@ -618,6 +786,95 @@ fn main() {
 ```
 
 A reference going out of scope doesn't affect the owner. Only when the **owner** goes out of scope is the value dropped.
+
+---
+
+### The Double Free Problem — A Security Deep Dive
+
+We already saw that Rust's single-owner rule prevents double frees. But *why* are double frees so dangerous? Let's go deep into what actually happens at the OS level and why this is one of the most exploited vulnerability classes in existence.
+
+**What Happens During a Double Free**
+
+When you call `free()` in C, the allocator marks that chunk of heap memory as available. It updates internal **heap metadata** — linked lists or trees that track free and allocated blocks. When you `free()` the same pointer again:
+
+```
+  What a double free does to heap metadata:
+
+  ┌─────────────────────────────────────────────────────┐
+  │ HEAP STATE AFTER first free(ptr):                   │
+  │                                                     │
+  │ Free list:  [chunk_A] → [ptr_chunk] → [chunk_B]    │
+  │             ptr_chunk is marked free, metadata OK   │
+  ├─────────────────────────────────────────────────────┤
+  │ HEAP STATE AFTER second free(ptr):  ⚠️  CORRUPTED  │
+  │                                                     │
+  │ Free list:  [ptr_chunk] → [chunk_A] → [ptr_chunk]  │
+  │                    ↑                       │        │
+  │                    └───────────────────────-┘        │
+  │             CYCLE! ptr_chunk appears TWICE           │
+  │             Allocator will hand out the same         │
+  │             memory to two different requests!        │
+  └─────────────────────────────────────────────────────┘
+```
+
+The corrupted free list creates a cycle. The next two `malloc()` calls will **both return the same pointer**. Now two completely unrelated parts of your program think they own the same memory. One writes sensitive data (passwords, encryption keys), the other reads it — or worse, an attacker controls what gets written.
+
+**From Double Free to Arbitrary Code Execution**
+
+Attackers exploit double frees through a technique called **heap spraying**:
+
+1. Trigger the double free to corrupt the allocator
+2. Allocate memory so the same region is returned twice
+3. Write a malicious payload (shellcode) through one reference
+4. The program reads it through the other reference, treating it as trusted data
+5. If the corrupted memory contains a function pointer → attacker controls program execution
+
+This isn't theoretical. Double frees are a **real and devastating** vulnerability class.
+
+**The Scale of Memory Safety CVEs**
+
+| Statistic | Source |
+|-----------|--------|
+| ~70% of Microsoft CVEs are memory safety issues | Microsoft Security Response Center, 2019 |
+| ~70% of Chrome security bugs are memory safety | Chromium project, 2020 |
+| ~67% of zero-day exploits target memory corruption | Google Project Zero, 2021 |
+
+Double frees, use-after-frees, buffer overflows — these aren't edge cases. They're the **majority** of security vulnerabilities in C and C++ codebases.
+
+**How Different Languages Handle This**
+
+```
+  ┌──────────────────────────────────────────────────────────────┐
+  │ Language │ Double Free Prevention   │ Trade-off              │
+  ├──────────┼──────────────────────────┼────────────────────────┤
+  │ C        │ ❌ None. Programmer must  │ Maximum footgun        │
+  │          │    remember.             │                        │
+  │ C++      │ ⚠️  unique_ptr helps, but │ Raw ptrs still exist   │
+  │          │    raw ptrs still allow  │                        │
+  │ Java/Go  │ ✅ GC makes free()       │ Runtime overhead,      │
+  │          │    impossible            │ GC pauses              │
+  │ Rust     │ ✅ Single owner = single │ Zero runtime cost,     │
+  │          │    drop. Structural.     │ compile-time only      │
+  └──────────┴──────────────────────────┴────────────────────────┘
+```
+
+**How Rust Makes Double Free Structurally Impossible**
+
+It's not that Rust detects double frees at runtime — it makes them **impossible to express** in the type system:
+
+```rust
+let s1 = String::from("sensitive data");
+let s2 = s1;   // Ownership MOVES — s1 is now invalid
+
+// At scope end:
+// - s2 is dropped → memory freed once ✅
+// - s1 is invalid → nothing to drop
+// Double free is not just prevented — it's UNREPRESENTABLE
+```
+
+In C, you have to **remember** not to double free. In Java, you pay the **runtime cost** of a garbage collector. In Rust, the compiler **proves** it can't happen — at zero runtime cost. This is the ownership system's most important real-world contribution: not just convenience, but **security by construction**.
+
+> *The best security vulnerability is the one that is structurally impossible to write.*
 
 ---
 

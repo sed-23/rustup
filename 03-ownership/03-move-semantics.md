@@ -128,6 +128,81 @@ what actually happens at the machine level:
 
 > **Key insight:** A "move" in Rust is NOT physically moving data. It's copying 24 bytes of stack metadata and invalidating the source. It's as cheap as a shallow copy.
 
+### What Actually Happens in Memory During a Move
+
+Let's go even deeper than the diagrams above. At the **machine level**, a move is just a `memcpy` — a
+bitwise copy of bytes from one stack location to another. The magic is entirely in the **compiler**,
+not the CPU.
+
+#### The Exact Byte Layout
+
+A `String` on a 64-bit system occupies exactly **24 bytes** on the stack:
+
+```
+Offset  Field       Size     Example Value
+──────  ──────────  ───────  ─────────────────────
+ 0..8   ptr         8 bytes  0x00007f3a_bc001a20
+ 8..16  len         8 bytes  0x00000000_00000005
+16..24  capacity    8 bytes  0x00000000_00000008
+```
+
+When you write `let s2 = s1;`, the CPU copies these **24 bytes** from `s1`'s stack
+slot to `s2`'s stack slot. That's it. The heap buffer at address `0x00007f3a_bc001a20`
+containing `"hello"` is **never touched**.
+
+```
+Before move:
+  Stack addr 0x7ffd1000: [ptr=0x7f3abc001a20, len=5, cap=8]  ← s1
+
+After move (memcpy of 24 bytes):
+  Stack addr 0x7ffd1000: [ptr=0x7f3abc001a20, len=5, cap=8]  ← s1 (INVALID — compiler marks it)
+  Stack addr 0x7ffd1018: [ptr=0x7f3abc001a20, len=5, cap=8]  ← s2 (new owner)
+
+Heap (unchanged!):
+  Addr 0x7f3abc001a20: [104, 101, 108, 108, 111]  ← "hello" in UTF-8
+```
+
+#### Why Moves Are O(1)
+
+This is a critical performance insight: **the cost of a move is always the size of the
+stack metadata, never the size of the heap data.** Moving a `String` containing 1 byte
+costs the same as moving a `String` containing 1 GB — exactly 24 bytes copied.
+
+```
+Data Size    Deep Copy Cost    Move Cost
+─────────    ──────────────    ─────────
+10 bytes     ~34 bytes         24 bytes
+1 KB         ~1048 bytes       24 bytes
+1 MB         ~1,048,600 bytes  24 bytes
+1 GB         ~1.07 billion     24 bytes   ← Same!
+```
+
+#### How LLVM Optimizes: Moves That Vanish
+
+In practice, many moves compile to **zero instructions**. LLVM applies several optimizations:
+
+- **Named Return Value Optimization (NRVO):** When a function returns a value, the compiler
+  may construct it directly in the caller's stack frame, skipping the move entirely
+- **Copy elision:** When the compiler can prove the source is unused after the move, it
+  reuses the same stack slot
+- **Register allocation:** Small types that "move" may live entirely in CPU registers —
+  the move is just the compiler reassigning which register maps to which variable name
+
+```rust
+fn make_string() -> String {
+    let s = String::from("hello");  // Constructed directly in caller's frame
+    s  // "Move" is optimized away — no memcpy at all in release mode
+}
+```
+
+#### Contrast with C++ Move Constructors
+
+In C++, a move is defined by a **user-written move constructor** that can do arbitrary work.
+A C++ `std::move` might allocate, log, lock a mutex, or even copy data — the language
+provides no guarantees. In Rust, moves are **always** a fixed-size `memcpy` (or nothing at
+all after optimization). There's no user-defined move logic, which is why moves are
+predictable and free.
+
 ---
 
 ## Where Moves Happen
@@ -504,6 +579,94 @@ The comparison:
 
 Rust gets the best of both worlds: the cheapness of a move AND compile-time safety.
 
+### Move Semantics Across Programming Languages
+
+Rust's move semantics didn't emerge in a vacuum. Every language handles the question
+"what happens when I assign one variable to another?" differently. Understanding the
+full spectrum helps you appreciate what Rust chose — and why.
+
+#### C: No Moves — Just Raw Memory Copies
+
+C has no concept of "moves." Assignment is always a bitwise copy of the struct's bytes.
+If a struct contains a pointer, both the original and the copy point to the same memory.
+The programmer is entirely responsible for tracking who should free it.
+
+```c
+// C — assignment copies the struct, including the pointer
+struct MyString { char* data; size_t len; };
+struct MyString s1 = make_string("hello");
+struct MyString s2 = s1;  // Bitwise copy — now BOTH have the same data pointer
+free(s1.data);             // s2.data is now a DANGLING POINTER
+printf("%s", s2.data);    // 💥 Use-after-free
+```
+
+#### C++: Moves Bolted On in C++11
+
+C++ defaulted to deep copies for decades. In C++11, **rvalue references** (`&&`) and
+`std::move` were added to opt into move semantics. This was a major language evolution,
+but it requires significant boilerplate:
+
+```cpp
+// C++ — you must write a move constructor manually
+class MyString {
+public:
+    char* data;
+    size_t len;
+
+    // Move constructor — YOU define what "move" means
+    MyString(MyString&& other) noexcept
+        : data(other.data), len(other.len) {
+        other.data = nullptr;  // Must manually null out the source
+        other.len = 0;
+    }
+};
+
+MyString s1 = make_string("hello");
+MyString s2 = std::move(s1);  // Calls YOUR move constructor
+// s1 is now in a "valid but unspecified" state — NOT a compile error to use it!
+std::cout << s1.data;  // 💥 Probably nullptr dereference, but COMPILES FINE
+```
+
+Compare this to Rust where moves are **implicit, require zero boilerplate, and the
+compiler prevents using the moved-from variable.** C++ gave programmers the tool;
+Rust made it the default.
+
+#### Java & Python: References All the Way Down
+
+In Java and Python, variables are **always** references to objects on the heap.
+"Moving" doesn't exist because you're only ever copying a pointer:
+
+```java
+// Java — s2 = s1 copies the reference, not the object
+String s1 = new String("hello");
+String s2 = s1;  // Both are references to the same object
+// The garbage collector frees the object when nothing references it
+```
+
+This is simple, but it means: no single ownership, no deterministic destruction,
+and the GC adds runtime overhead and pause-time unpredictability.
+
+#### Swift: Learning From Rust
+
+Swift 5.9 (2023) introduced the `consuming` keyword, directly inspired by Rust.
+It allows functions to take ownership of a value, preventing the caller from using
+it afterward — following the same principle Rust has had since 1.0.
+
+#### The Key Insight
+
+Rust made moves the **DEFAULT** behavior for non-trivial types, not an optimization
+requiring special syntax. Every other language either doesn't have moves (C, Java,
+Python), bolted them on later (C++), or is adopting them now (Swift).
+
+| Language | Default Assignment | Move Support            | Use-After-Move Safety |
+|----------|-------------------|-------------------------|------------------------|
+| C        | Bitwise copy      | None                    | None — undefined behavior |
+| C++      | Deep copy         | Opt-in (`std::move`)    | No — compiles, UB at runtime |
+| Java     | Reference copy    | N/A (GC manages memory) | N/A — no ownership concept |
+| Python   | Reference copy    | N/A (GC manages memory) | N/A — no ownership concept |
+| Swift    | Copy (value) / Ref (class) | `consuming` (5.9+) | Partial — compiler checks consuming |
+| **Rust** | **Move**          | **Implicit (default)**  | **Full — compile-time error** |
+
 ---
 
 ## Why Moves Are Good
@@ -601,6 +764,112 @@ let y = x;  // This is a COPY, not a move!
 println!("x={}, y={}", x, y);  // ✅ Both valid
 // i32 implements Copy, so x is duplicated, not moved
 ```
+
+### Partial Moves and the Pin API — Advanced Move Concepts
+
+We've seen basic partial moves above, but the concept has deeper implications that
+connect to some of Rust's most advanced features.
+
+#### Why Partial Moves Exist
+
+When you move one field out of a struct, Rust makes the **entire struct** inaccessible
+(except for fields that weren't moved). This maintains the core guarantee: **every
+value has exactly one owner at all times.**
+
+```rust
+struct Record {
+    name: String,
+    data: Vec<u8>,
+    id: u32,
+}
+
+fn main() {
+    let r = Record {
+        name: String::from("Alice"),
+        data: vec![1, 2, 3],
+        id: 42,
+    };
+
+    let extracted_name = r.name;  // Partial move: name moved out
+
+    println!("id: {}", r.id);          // ✅ id is Copy — still accessible
+    // println!("{:?}", r.data);       // ❌ Whole struct is partially moved
+    // println!("{:?}", r.name);       // ❌ name was moved
+    println!("name: {}", extracted_name); // ✅
+}
+```
+
+#### The Self-Referential Struct Problem
+
+Consider a struct that contains a pointer to its **own** field:
+
+```
+struct SelfRef {
+    data: String,
+    ptr: *const String,  ← Points to self.data!
+}
+
+Memory layout BEFORE move:
+┌─────────────────────────────┐
+│ data: String (at addr 0x100)│ ←──┐
+│ ptr:  0x100                 │ ───┘  Points to data above
+└─────────────────────────────┘
+
+Memory layout AFTER move to new address:
+┌─────────────────────────────┐
+│ data: String (at addr 0x200)│      data is now here!
+│ ptr:  0x100                 │ ───→ DANGLING! Still points to old location
+└─────────────────────────────┘
+```
+
+If you move this struct, the internal pointer (`ptr`) still points to the **old**
+address. The data is now at a new address, but the pointer wasn't updated. This is
+a dangling pointer — exactly the kind of bug Rust is designed to prevent.
+
+**Real-world analogy:** Imagine moving a house that has internal plumbing. The pipes
+connect rooms within the house. If you pick up the house and move it to a new lot, the
+internal pipes still reference the old room locations — water flows to nowhere. You'd
+need to re-route every pipe after the move.
+
+#### Why `async/await` Needed `Pin<T>`
+
+This isn't just a theoretical problem. When you write `async fn`, the compiler generates
+a **state machine struct** that captures local variables across `.await` points. If one
+variable is a reference to another, the struct becomes self-referential:
+
+```rust
+async fn example() {
+    let data = String::from("hello");
+    let reference = &data;  // reference points to data
+    some_async_op().await;  // State machine captures both data AND reference
+    println!("{}", reference);
+}
+// The generated state machine struct holds both `data` and `reference`
+// where `reference` points to `data` — a self-referential struct!
+```
+
+If this state machine were moved (e.g., sent to another thread), `reference` would
+dangle. This is why Rust introduced `Pin<T>`.
+
+#### What `Pin<T>` Does
+
+`Pin<T>` is a wrapper that **promises the inner value will not be moved** after pinning.
+It doesn't change the value's memory layout — it's a compile-time contract that prevents
+calling any API that would move the value.
+
+```
+Normal value:    Can be moved freely          ──→  let b = a; ✅
+Pinned value:    Pin<&mut T> prevents moves   ──→  Can't move out ✅ (self-ref safe)
+```
+
+This is an advanced topic, but it shows how deep the move-semantics rabbit hole goes:
+Rust's entire `async` ecosystem depends on being able to reason about whether a value
+can be moved, and `Pin` is the safety valve for the cases where it can't.
+
+> **Key takeaway:** Move semantics aren't just about assignment — they're a foundational
+> concept that shapes Rust's approach to async programming, self-referential data, and
+> zero-cost abstractions. Understanding moves deeply prepares you for Rust's most
+> powerful features.
 
 ---
 
