@@ -219,6 +219,76 @@ Push " world":
     len=11, cap=16
 ```
 
+### How String Growth Works Internally — The Allocator
+
+When a `String` needs more capacity, a whole chain of low-level operations fires behind the scenes.
+Understanding this helps you write faster code and reason about performance.
+
+**The growth strategy: doubling (amortized O(1) push)**
+
+`String` wraps a `Vec<u8>`, which typically **doubles** its capacity when it runs out of room.
+This means most `push` / `push_str` calls are O(1) — the data just goes into pre-allocated space.
+But occasionally you hit a resize, which is O(n) because all existing bytes must be copied
+to a new, larger allocation.
+
+Over many operations, the **average** cost per push is O(1). This "amortized O(1)" strategy
+is the same one used by Java's `ArrayList`, Python's `list`, C++'s `std::vector`, and
+JavaScript's arrays.
+
+**What happens during a resize:**
+
+```
+1. String calls the global allocator (system malloc, jemalloc, etc.)
+2. Allocator finds a free block of the requested size
+3. Old data is memcpy'd to the new block
+4. Old block is returned to the allocator's free list
+5. String's pointer is updated to the new block
+
+   Old heap block          New heap block
+   ┌──────────┐            ┌──────────────────────┐
+   │ h e l l o│  ──copy──→ │ h e l l o _ _ _ _ _ _│
+   └──────────┘   freed    └──────────────────────┘
+     cap=8                   cap=16
+```
+
+**Memory fragmentation:** frequent allocations and deallocations can fragment the heap —
+leaving small gaps between allocated blocks that are too small to reuse. The allocator works
+hard to mitigate this (coalescing adjacent free blocks, using size classes), but fragmentation
+is a real concern in long-running programs.
+
+**Why `String::with_capacity(n)` matters:**
+
+```
+Building a ~600-byte string character-by-character:
+
+  Without pre-allocation:    ~14 heap allocations (8→16→32→64→128→256→512→1024)
+  With with_capacity(600):   exactly 1 heap allocation
+
+That's 13 fewer malloc + memcpy + free cycles!
+```
+
+```rust
+// ❌ Causes multiple reallocations
+let mut s = String::new();
+for word in long_word_list {
+    s.push_str(word);
+    s.push(' ');
+}
+
+// ✅ Single allocation — much faster
+let total_len: usize = long_word_list.iter().map(|w| w.len() + 1).sum();
+let mut s = String::with_capacity(total_len);
+for word in long_word_list {
+    s.push_str(word);
+    s.push(' ');
+}
+```
+
+> **Systems programming connection:** Rust gives you control that GC languages don't.
+> You choose *when* and *how much* to allocate. In embedded or real-time systems where
+> heap allocation is forbidden, you might avoid `String` entirely and use fixed-size
+> stack buffers (`[u8; N]`) or crates like `heapless::String`.
+
 ---
 
 ## `&str` — The Borrowed String Slice
@@ -310,6 +380,64 @@ let d: &str = std::str::from_utf8(bytes).unwrap();
 | In struct fields | ✅ Easy (owns its data) | ⚠️ Needs lifetime annotations |
 | As function param | Works but inflexible | ✅ Preferred |
 | Copy | ❌ (would duplicate heap data) | ✅ (just copies ptr + len) |
+
+---
+
+### String Types Across Programming Languages
+
+Rust's two-string-type pattern isn't unique — most systems languages face the same design question.
+Here's how different languages handle text:
+
+**C: `char*` — the wild west**
+
+C has no built-in string type. A "string" is just a pointer to a null-terminated array of bytes.
+You manually `malloc` and `free` memory, track lengths yourself, and risk buffer overflows constantly.
+This is exactly the kind of unsafety Rust was designed to eliminate.
+
+**C++: `std::string` + `std::string_view` — Rust's closest cousin**
+
+C++17 introduced `std::string_view`, making C++ the language most similar to Rust's model:
+- `std::string` ≈ `String` (owned, heap-allocated, growable)
+- `std::string_view` ≈ `&str` (borrowed, read-only view, pointer + length)
+
+The key difference: C++ doesn't enforce ownership at compile time. A `string_view` can dangle
+if the underlying `string` is destroyed — Rust's borrow checker prevents this entirely.
+
+**Java: `String` + `StringBuilder` — immutable by default**
+
+Java's `String` is immutable and heap-allocated. Every concatenation creates a new object.
+`StringBuilder` exists for efficient mutation. The garbage collector handles all cleanup.
+
+**Python & JavaScript: immutable strings, hidden allocations**
+
+Python's `str` and JavaScript strings are immutable primitives. Every `+` operation allocates
+a brand new string. The runtime handles memory, but you have zero control over allocation behavior.
+
+**Go: `string` + `[]byte` — implicit borrowing**
+
+Go's `string` is internally a pointer + length (like `&str`!), and it's immutable.
+For mutable bytes, you convert to `[]byte`. Go's garbage collector manages everything.
+
+```
+The universal pattern: most modern languages have converged on
+"immutable text type + some way to build/mutate text"
+
+Rust just makes the ownership distinction EXPLICIT in the type system.
+```
+
+| Language | Owned String | Borrowed/View | Mutable? | Encoding | GC Required? |
+|----------|-------------|---------------|----------|----------|--------------|
+| **Rust** | `String` | `&str` | String: yes, &str: no | UTF-8 | No |
+| **C** | `char*` (manual) | `const char*` | Yes (unsafe) | Unspecified | No |
+| **C++** | `std::string` | `std::string_view` | string: yes | Unspecified | No |
+| **Java** | `String` | — | No (use StringBuilder) | UTF-16 | Yes |
+| **Python** | `str` | — | No (immutable) | UTF-8/UCS | Yes |
+| **JavaScript** | `string` | — | No (immutable) | UTF-16 | Yes |
+| **Go** | `[]byte` | `string` | []byte: yes | UTF-8 | Yes |
+
+> **Key insight:** Rust's `String`/`&str` split is most similar to C++'s `string`/`string_view`,
+> but Rust adds **compile-time ownership guarantees** that C++ lacks. You get the performance of
+> C++ strings with the safety of garbage-collected languages — without paying for a garbage collector.
 
 ---
 
@@ -1012,6 +1140,84 @@ let c = a + &b;
 // println!("{}", a);  // ❌ a was moved!
 println!("{}", b);     // ✅ b was only borrowed
 ```
+
+---
+
+### Small String Optimization and Other String Tricks
+
+Before diving into exercises, let's explore some advanced string techniques that show up
+in real-world Rust codebases.
+
+**Small String Optimization (SSO)**
+
+C++'s `std::string` has a well-known trick: strings shorter than ~22 bytes are stored
+**inside the string object itself** — no heap allocation at all!
+
+```
+C++ std::string with SSO:          Rust's String (no SSO):
+┌─────────────────────────┐        ┌────────────────┐       Heap:
+│ "hi" stored inline      │        │ ptr ──────────────────→ [h,i]
+│ (no heap allocation!)   │        │ len: 2         │
+│                         │        │ cap: 2         │
+└─────────────────────────┘        └────────────────┘
+  24 bytes, 0 heap allocs            24 bytes + 1 heap alloc
+```
+
+Rust's standard `String` does **NOT** do SSO — it always heap-allocates, even for `"hi"`.
+Why? SSO adds branching complexity ("is this string inline or on the heap?"), and Rust
+values simplicity and predictable behavior. But if you need SSO, the ecosystem has you covered:
+
+- **`smol_str`** — immutable, inline for ≤ 22 bytes, `Clone` is O(1)
+- **`compact_str`** — drop-in `String` replacement with SSO
+- **`ecow`** — clone-on-write with small-buffer optimization
+
+**The Rust String Zoo — When to Use What**
+
+Beyond `String` and `&str`, Rust's type system enables several specialized string types:
+
+| Type | What It Is | When to Use It |
+|------|-----------|----------------|
+| `String` | Owned, growable, heap-allocated | Building/modifying strings |
+| `&str` | Borrowed view (ptr + len) | Reading strings, function params |
+| `Cow<'a, str>` | Clone-on-Write: borrows when possible, allocates on mutation | Functions that *sometimes* modify |
+| `Arc<str>` | Thread-safe shared ownership of a string slice | Concurrent access to shared strings |
+| `Box<str>` | Owned, exactly-sized (no capacity field — saves 8 bytes vs String) | Long-lived immutable data |
+| `&'static str` | String literal baked into the binary | Constants, status messages |
+| `Rc<str>` | Single-threaded shared ownership | Shared strings within one thread |
+
+```rust
+use std::borrow::Cow;
+use std::sync::Arc;
+
+// Cow<str>: borrow when possible, allocate only when needed
+fn normalize_url(url: &str) -> Cow<str> {
+    if url.starts_with("http://") {
+        // Need to modify → allocates a new String
+        Cow::Owned(url.replace("http://", "https://"))
+    } else {
+        // No change needed → just borrows the input (zero-cost!)
+        Cow::Borrowed(url)
+    }
+}
+
+// Arc<str>: shared across threads without cloning the data
+fn cache_header() -> Arc<str> {
+    let header: Arc<str> = Arc::from("X-Custom-Header: cached-value");
+    // Cloning Arc<str> just increments a reference count — O(1)!
+    header
+}
+```
+
+**Real-world example:** Imagine a web server:
+- **`&'static str`** for fixed status messages like `"200 OK"` — zero cost, lives in the binary
+- **`Arc<str>`** for cached HTTP headers shared across request-handling threads
+- **`Cow<str>`** for URL normalization — avoids allocation when the URL is already correct
+- **`String`** for dynamically built response bodies
+
+> **The takeaway:** Rust's rich string landscape reflects its core philosophy — give programmers
+> the tools to make *precise* choices about ownership, allocation, and sharing. In most code,
+> `String` and `&str` are all you need. But when performance matters, the specialized types
+> let you eliminate unnecessary allocations with surgical precision.
 
 ---
 

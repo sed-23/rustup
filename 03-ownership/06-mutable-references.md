@@ -168,6 +168,70 @@ Rust's rule makes this impossible:
 - If someone is writing (`&mut T`), nobody else can read or write
 - If people are reading (`&T`), nobody can write
 
+### The Data Race Problem — Why One Mutable Reference Matters
+
+To truly appreciate Rust's rule, you need to understand what data races are **at the hardware level** — and why every other language struggles with them.
+
+#### What Happens at the Hardware Level
+
+Modern CPUs have multiple cores, each with their own cache hierarchy (L1, L2, L3). When two cores write to the same **cache line** (typically 64 bytes) simultaneously, the hardware must arbitrate:
+
+```
+  Core 0                     Core 1
+  ┌──────────┐               ┌──────────┐
+  │ L1 Cache │               │ L1 Cache │
+  │ [x = 42] │               │ [x = 99] │
+  └────┬─────┘               └────┬─────┘
+       │  WRITE x = 42             │  WRITE x = 99
+       └──────────┐   ┌───────────┘
+                  ↓   ↓
+            ┌──────────────┐
+            │  Shared RAM   │
+            │  x = ???      │  ← Which write wins? UNDEFINED.
+            └──────────────┘
+```
+
+The CPU cache coherence protocol (MESI/MOESI) tries to keep caches consistent, but when two writes happen in the **same clock cycle window**, the result is genuinely undefined — not just "one or the other wins," but potentially a **torn read** where half the bytes come from one write and half from another.
+
+#### The TOCTOU Problem (Time of Check to Time of Use)
+
+A particularly insidious race condition pattern:
+
+```
+Thread A:                           Thread B:
+  1. if balance >= 100 {            1. if balance >= 100 {
+     // balance is 150, ok!            // balance is 150, ok!
+  2.   balance -= 100;              2.   balance -= 100;
+     // balance is now 50               // balance is now -50! 💥
+  }
+```
+
+Between **checking** a value and **acting** on it, another thread can change it. This is called TOCTOU — and it's responsible for countless real-world bugs.
+
+#### Famous Data Race Disasters
+
+- **Therac-25 (1985-1987):** A radiation therapy machine had a race condition between its UI and beam control. Due to unsynchronized shared state, patients received radiation doses **100x the intended amount**. At least 3 people died and 3 more were seriously injured.
+- **Northeast Blackout of 2003:** A race condition in the alarm system software at FirstEnergy caused alarms to silently fail. Operators had no warning as the grid cascaded into failure. 55 million people lost power.
+
+These aren't hypothetical — **data races kill people and shut down infrastructure.**
+
+#### How Other Languages "Solve" Data Races
+
+| Language | Data Race Prevention | When Checked | Runtime Cost | Escape Hatches |
+|----------|---------------------|-------------|-------------|----------------|
+| **Rust** | One-mutable-reference rule | Compile time | Zero | `unsafe` blocks |
+| **Java** | `synchronized`, `volatile`, `j.u.c` locks | Runtime | Lock overhead on every access | Everything outside `synchronized` |
+| **Go** | Channels, goroutines | Runtime (race detector optional) | Channel overhead | Shared memory still possible |
+| **Python** | GIL (Global Interpreter Lock) | Runtime | Prevents true parallelism entirely | C extensions bypass GIL |
+| **C/C++** | `mutex`, `atomic` (programmer responsibility) | Never (undefined behavior) | Lock/atomic overhead | Everything — races are UB |
+
+- **Java** requires you to remember to use `synchronized` on every access. Miss one? Silent data corruption.
+- **Go** says "share memory by communicating" but the `-race` detector is opt-in and only catches races that actually execute during your test run.
+- **Python's GIL** is the bluntest possible hammer — it prevents all true parallelism in CPython, and they're only now (2024-2026) experimenting with removing it.
+- **C/C++** data races are literally **undefined behavior** — the compiler can assume they never happen, which means optimizations can make the bug even worse.
+
+Rust's approach is unique: the one-mutable-reference rule makes data races **unrepresentable** in safe code. You can't even write the buggy program — the compiler rejects it. This is enforced entirely at compile time, so there is **zero runtime overhead**. No locks, no channels, no GIL — just static proof that your code is race-free.
+
 ### Visualizing the Rule
 
 ```
@@ -539,6 +603,70 @@ fn main() {
 }
 ```
 
+### Interior Mutability — When the Rules Aren't Enough
+
+Sometimes you have a legitimate need: multiple parts of your code hold references to the same data, **and** one of them needs to mutate it. The "aliasing XOR mutability" rule is too strict for these patterns.
+
+Rust's answer: **interior mutability** — types that allow mutation through an **immutable reference** (`&self`), moving the borrow check from compile time to runtime.
+
+#### The Interior Mutability Types
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                  Interior Mutability Toolkit                  │
+├──────────────┬──────────────┬────────────────────────────────┤
+│   Cell<T>    │  RefCell<T>  │        Mutex<T> / RwLock<T>    │
+├──────────────┼──────────────┼────────────────────────────────┤
+│ Copy types   │ Any type     │ Any type + Send                │
+│ get()/set()  │ borrow()/    │ lock()/read()/write()          │
+│              │ borrow_mut() │                                │
+│ No refs to   │ Runtime      │ OS-level locking               │
+│ interior     │ borrow check │ Thread-safe                    │
+│ Zero-cost    │ Small cost   │ Higher cost                    │
+│ !Sync        │ !Sync        │ Sync (whole point)             │
+└──────────────┴──────────────┴────────────────────────────────┘
+```
+
+- **`Cell<T>`**: For `Copy` types only. No references to the interior — you `get()` a copy and `set()` a new value. Essentially free, no runtime borrow tracking.
+- **`RefCell<T>`**: For any type. Tracks borrows at runtime via `borrow()` (returns `Ref<T>`) and `borrow_mut()` (returns `RefMut<T>`). **Panics if you violate borrowing rules** — you're trading a compile-time error for a runtime panic.
+- **`Mutex<T>`**: Like `RefCell` but thread-safe. Uses OS-level locking so it can be shared across threads (`Sync`). The `lock()` call blocks until the mutex is available.
+
+#### RefCell in Action
+
+```rust
+use std::cell::RefCell;
+
+fn main() {
+    let data = RefCell::new(vec![1, 2, 3]);
+
+    // Multiple code paths share &data (immutable reference)
+    // but can still mutate through borrow_mut()
+    {
+        let mut inner = data.borrow_mut();  // Runtime checked
+        inner.push(4);
+    }  // RefMut dropped — borrow released
+
+    // Now we can borrow immutably
+    println!("{:?}", data.borrow());  // [1, 2, 3, 4]
+
+    // ⚠️ THIS PANICS at runtime:
+    // let r1 = data.borrow();
+    // let r2 = data.borrow_mut();  // PANIC: already borrowed!
+}
+```
+
+#### When to Use Interior Mutability
+
+| Pattern | Why You Need It | Which Type |
+|---------|----------------|------------|
+| Observer/callback lists | Multiple observers hold `&self`, need to register/unregister | `RefCell<Vec<T>>` |
+| Caching / memoization | `&self` method wants to cache results | `Cell<Option<T>>` or `RefCell<HashMap>` |
+| Graph data structures | Nodes reference each other, need mutation | `RefCell<T>` with `Rc<T>` |
+| Shared config across threads | Multiple threads read, occasional write | `Mutex<T>` or `RwLock<T>` |
+| Mock objects in tests | Test injects `&dyn Trait`, mock needs to record calls | `RefCell<Vec<Call>>` |
+
+> **Important:** Interior mutability is **NOT** an escape hatch to avoid learning the borrowing rules. It's a targeted solution for specific patterns — graph structures, shared state, observer patterns — where aliasing and mutation genuinely must coexist. If you find yourself wrapping everything in `RefCell`, you probably need to redesign your data flow.
+
 ---
 
 ## The Borrow Checker in Action
@@ -676,6 +804,91 @@ fn create() -> String {
     s
 }
 ```
+
+---
+
+## Non-Lexical Lifetimes (NLL) — The Borrow Checker Got Smarter
+
+If you read Rust blog posts or Stack Overflow answers from 2015-2017, you'll see a **lot** of complaints about "fighting the borrow checker." Many of those complaints are no longer relevant, thanks to **Non-Lexical Lifetimes (NLL)**.
+
+### The Old World: Lexical Lifetimes (pre-2018)
+
+Before Rust 2018, borrows lasted until the **end of the enclosing scope** — the closing `}` brace. This was simple to implement but **overly conservative**:
+
+```rust
+// Pre-2018: This was REJECTED even though it's perfectly safe
+fn main() {
+    let mut v = Vec::new();
+    let r = &v;           // Immutable borrow starts
+    println!("{:?}", r);  // Last actual use of r
+    // ... r is never used again ...
+    v.push(1);            // ❌ OLD COMPILER: "v is still borrowed!"
+}                          //    Borrow lasted until this brace
+```
+
+The borrow on `r` was **clearly finished** after `println!`, but the old compiler kept it alive until `}` because that's where `r`'s lexical scope ended.
+
+### The Fix: Borrows End at Last Use
+
+NLL, stabilized in the **Rust 2018 edition** (implemented 2018-2019), changed the rule: a borrow ends at its **last use point**, not at the closing brace.
+
+```
+OLD (Lexical):                    NEW (NLL):
+  let r = &v;                       let r = &v;
+  println!("{:?}", r);              println!("{:?}", r);
+  │                                  // r's borrow ENDS HERE ✓
+  │  ← borrow still alive           v.push(1);  // ✅ OK!
+  │
+  v.push(1);  // ❌ REJECTED
+  }  ← borrow ends here
+```
+
+### How NLL Works Under the Hood
+
+NLL doesn't just use simple heuristics — it performs **precise dataflow analysis** on Rust's MIR (Mid-level Intermediate Representation):
+
+```
+Source Code          HIR              MIR              LLVM IR
+  (text)    →  (syntax tree)  →  (control-flow   →  (machine
+                                  graph + basic       code)
+                                  blocks)
+                                      ↑
+                                NLL analyzes HERE:
+                                - Builds CFG
+                                - Computes liveness
+                                  intervals for
+                                  each borrow
+                                - Checks no
+                                  conflicting
+                                  borrows overlap
+```
+
+The compiler builds a **control-flow graph** of your function and computes **liveness intervals** — the precise range of program points where each borrow is "live" (i.e., might still be used). Two borrows conflict only if their liveness intervals **actually overlap**. This is far more precise than "same lexical scope."
+
+### Polonius: The Next Generation
+
+**Polonius** is the next-generation borrow checker currently being developed (as of 2025-2026, available experimentally with `-Z polonius`). It computes even more precise lifetime information using a **Datalog-based** analysis. Programs that NLL still conservatively rejects — particularly those involving conditional borrows and complex control flow — will compile under Polonius:
+
+```rust
+// NLL rejects this. Polonius accepts it.
+fn get_or_insert(map: &mut HashMap<String, String>, key: &str) -> &String {
+    if let Some(val) = map.get(key) {
+        return val;  // Borrow from map escapes via return
+    }
+    map.insert(key.to_string(), "default".to_string());
+    &map[key]
+}
+```
+
+### The Practical Impact
+
+NLL was one of the **single biggest quality-of-life improvements** in Rust's history. If you encounter old tutorials or blog posts that show "the borrow checker is too strict" examples — try them on a modern Rust compiler. Most of them just work now.
+
+| Era | Borrow Scope | Common Complaint |
+|-----|-------------|------------------|
+| Pre-2018 (Lexical) | Until closing `}` | "I have to add ugly extra scopes everywhere" |
+| 2018+ (NLL) | Until last use | "It mostly just works" |
+| Future (Polonius) | Precise per-path analysis | "Even complex patterns compile" |
 
 ---
 
