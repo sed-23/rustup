@@ -46,6 +46,54 @@ Rust doesn't have null at all. If a value might be absent, the type system **req
 
 ---
 
+### Tony Hoare's Billion-Dollar Mistake — The Full Story
+
+In 1965, Tony Hoare was designing the type system for **ALGOL W** and introduced null references:
+
+> *"I call it my billion-dollar mistake. It was the invention of the null reference in 1965. At that time, I was designing the first comprehensive type system for references in an object-oriented language. My goal was to ensure that all use of references should be absolutely safe, with checking performed automatically by the compiler. But I couldn't resist the temptation to put in a null reference, simply because it was so easy to implement."* — Tony Hoare, 2009
+
+That single decision infected nearly every language created since. Some estimates put the **total economic damage at over $1 billion per year** across the software industry — lost developer time, crashed production systems, security vulnerabilities, and corrupted data.
+
+#### How Null Works Across Languages
+
+```
+┌─────────────┬─────────────────────────────────────────────────────────┐
+│   C / C++   │ NULL is memory address 0x0. Dereferencing it causes a  │
+│             │ segfault — or worse, undefined behavior. No warning.   │
+├─────────────┼─────────────────────────────────────────────────────────┤
+│    Java     │ Every object reference can be null. Call a method on   │
+│             │ null → NullPointerException. #1 most common runtime    │
+│             │ error in Java applications.                            │
+├─────────────┼─────────────────────────────────────────────────────────┤
+│ JavaScript  │ BOTH null AND undefined exist. null == undefined is    │
+│             │ true, null === undefined is false. Endless confusion.  │
+├─────────────┼─────────────────────────────────────────────────────────┤
+│   Python    │ None is at least a singleton object, but calling a     │
+│             │ method on it → AttributeError at *runtime*.            │
+├─────────────┼─────────────────────────────────────────────────────────┤
+│ Kotlin/Swift│ Nullable types: String? vs String. Null-safety at the  │
+│             │ type level — inspired by Rust/ML/Haskell. Big step     │
+│             │ forward, but still has null as a concept.              │
+├─────────────┼─────────────────────────────────────────────────────────┤
+│    Rust     │ No null at all. Option<T> is a completely different     │
+│             │ design — absence is a *type*, not a magic value.       │
+└─────────────┴─────────────────────────────────────────────────────────┘
+```
+
+| Language | Null Type | Crash Type | Compile-Time Safe? | Every Type Nullable? |
+|------------|-------------|---------------------|:------------------:|:--------------------:|
+| C/C++ | `NULL` (0x0) | Segfault / UB | No | Yes (pointers) |
+| Java | `null` | NullPointerException | No | Yes (objects) |
+| JavaScript | `null` + `undefined` | TypeError | No | Yes |
+| Python | `None` | AttributeError | No | Yes |
+| Kotlin | `null` (opt-in `?`) | NPE if forced | Mostly | No (`String?` only) |
+| Swift | `nil` (opt-in `?`) | Fatal error if forced| Mostly | No (`String?` only) |
+| Rust | **N/A** | **N/A** | **Yes** | **No** |
+
+Rust didn't just "fix null" — it eliminated the entire category of bug. There is no `null` keyword. There is no way to create a value that secretly holds nothing. If something can be absent, the type is `Option<T>`, and the compiler won't let you forget.
+
+---
+
 ## What Is `Option<T>`?
 
 `Option` is a standard library enum with exactly two variants:
@@ -314,6 +362,66 @@ fn main() {
 }
 ```
 
+### Option as a Monad — Functional Programming Connection
+
+If you've ever used JavaScript's optional chaining (`user?.address?.street`) or C#'s null-conditional operator (`user?.Address?.Street`), you've already used a simplified version of what Option provides. Rust just makes it explicit and composable.
+
+In functional programming, Option is what's called a **monad**. Don't let that word scare you — it just means a type that:
+1. **Wraps** a value (like `Some(5)` wraps `5`)
+2. Provides **`map`** to transform the inner value
+3. Provides **`and_then`** (a.k.a. `flat_map` or `bind`) to chain operations that themselves return the wrapper type
+
+This is **identical** to Haskell's `Maybe` monad, which has existed since 1990:
+
+```
+Haskell       Rust             Meaning
+─────────     ────────         ─────────────────────
+Just 5        Some(5)          A value is present
+Nothing       None             No value
+fmap f m      opt.map(f)       Transform inner value
+m >>= f       opt.and_then(f)  Chain fallible operations
+```
+
+#### The Railway Programming Analogy
+
+```
+Some(input) ──map──▶ Some(step1) ──and_then──▶ Some(step2) ──map──▶ Some(result)
+                                                                      ✅
+
+None ──────────────────────────────────────────────────────────────▶ None
+  (every operation is skipped — the None just passes through)        ❌
+```
+
+Think of `Some` as the **success track** and `None` as the **failure track**. Once a value shunts onto the failure track, every subsequent `map` and `and_then` is a no-op. The `None` flows straight to the end.
+
+#### Avoiding Nested `if let` with Chains
+
+```rust
+// ❌ Deeply nested — hard to read
+fn get_area_code(user: &User) -> Option<&str> {
+    if let Some(ref addr) = user.address {
+        if let Some(ref phone) = addr.phone {
+            if let Some(ref area) = phone.area_code {
+                return Some(area.as_str());
+            }
+        }
+    }
+    None
+}
+
+// ✅ Flat chain — idiomatic Rust
+fn get_area_code(user: &User) -> Option<&str> {
+    user.address.as_ref()
+        .and_then(|addr| addr.phone.as_ref())
+        .and_then(|phone| phone.area_code.as_ref())
+        .map(|code| code.as_str())
+}
+```
+
+This flat, chainable style is the **idiomatic** way to work with Option in Rust. Prefer it over `unwrap`, and prefer it over deeply nested `match` / `if let` when you have multiple layers of optionality.
+
+> **Fun fact:** JavaScript's `Promise` is also a monad — `.then()` is `and_then`. Rust's `Result<T, E>` is also a monad. Once you see the pattern, you see it everywhere.
+
 ### `or` and `or_else`
 
 Provide a fallback Option:
@@ -448,6 +556,76 @@ if let Some(val) = x {
     println!("{}", val);
 }
 ```
+
+---
+
+### Option at the Machine Level — It's Just an Enum
+
+`Option<T>` has no compiler magic. It's literally defined as:
+
+```rust
+enum Option<T> {
+    None,
+    Some(T),
+}
+```
+
+For most types, the in-memory layout is: **1 byte discriminant** (which variant?) **+ T bytes + alignment padding**. But the Rust compiler applies **niche optimization** to eliminate the discriminant when possible — and the results are remarkable.
+
+#### Size Comparison Table
+
+```rust
+use std::mem::size_of;
+use std::num::NonZeroU32;
+
+println!("i32:                {}", size_of::<i32>());                // 4
+println!("Option<i32>:        {}", size_of::<Option<i32>>());        // 8  (4 + 1 + 3 padding)
+
+println!("&str:               {}", size_of::<&str>());               // 16
+println!("Option<&str>:       {}", size_of::<Option<&str>>());       // 16 ← same!
+
+println!("&u8:                {}", size_of::<&u8>());                // 8
+println!("Option<&u8>:        {}", size_of::<Option<&u8>>());        // 8  ← same!
+
+println!("NonZeroU32:         {}", size_of::<NonZeroU32>());         // 4
+println!("Option<NonZeroU32>: {}", size_of::<Option<NonZeroU32>>()); // 4  ← same!
+
+println!("bool:               {}", size_of::<bool>());               // 1
+println!("Option<bool>:       {}", size_of::<Option<bool>>());       // 1  ← same!
+println!("Option<Option<bool>>: {}", size_of::<Option<Option<bool>>>()); // 1  ← still!
+```
+
+#### How Niche Optimization Works
+
+```
+Type               Size    None Representation     Why
+──────────────────────────────────────────────────────────────────────
+Option<&T>         8 bytes  null pointer (0x0)     References can never be 0
+Option<NonZeroU32>  4 bytes  0x00000000             NonZeroU32 can never be 0
+Option<bool>       1 byte   value 2                bool only uses 0 and 1
+Option<Option<bool>> 1 byte values 0,1,2,3         Four states fit in one byte:
+                                                    0 = Some(Some(false))
+                                                    1 = Some(Some(true))
+                                                    2 = Some(None)
+                                                    3 = None
+```
+
+The key insight: if a type has **unused bit patterns** (a "niche"), the compiler uses one of those patterns to represent `None` — no extra discriminant needed.
+
+#### What This Means in Practice
+
+```
+     C (nullable pointer)         Rust (Option<&T>)
+    ┌──────────────────┐         ┌──────────────────┐
+    │  8 bytes: addr   │         │  8 bytes: addr   │
+    │  (0x0 = null)    │         │  (0x0 = None)    │
+    └──────────────────┘         └──────────────────┘
+         Same size!                   Same size!
+    ❌ No compile check           ✅ Compiler enforced
+    💥 Segfault on deref          🛡️ Must match/unwrap
+```
+
+`Option<&T>` is **truly zero-cost** for pointer types — it occupies exactly the same memory as a raw C pointer. The compiler achieves what C null pointers do (zero overhead) while **preventing** what C null pointers cause (crashes). This is Rust's zero-cost abstractions philosophy in action: you don't pay for safety.
 
 ---
 

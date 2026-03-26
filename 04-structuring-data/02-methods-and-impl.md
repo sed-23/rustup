@@ -48,6 +48,71 @@ fn main() {
 }
 ```
 
+### Methods Across Programming Languages
+
+Rust's `impl` block approach to methods is just one of many designs languages have chosen. Understanding how other languages attach behavior to data reveals *why* Rust made its particular tradeoffs.
+
+**C — No methods at all.** You write standalone functions and pass a pointer to the struct manually:
+
+```c
+typedef struct { double width; double height; } Rectangle;
+
+double rect_area(const Rectangle* r) {
+    return r->width * r->height;
+}
+
+rect_area(&my_rect);  // caller must pass the pointer
+```
+
+This is essentially what Rust's `&self` desugars to — but Rust gives you dot-call syntax on top.
+
+**C++ — Methods live inside the class.** A hidden `this` pointer is passed implicitly:
+
+```cpp
+class Rectangle {
+public:
+    double area() { return this->width * this->height; }
+    //                     ^^^^ implicit, often omitted
+};
+```
+
+**Java / C# — Everything is a method.** Standalone functions don't exist; even `main` lives inside a class. The receiver is the implicit `this`.
+
+**Python — Explicit `self`, like Rust!** Guido van Rossum famously insisted that the receiver be an explicit parameter. This was controversial but makes the data flow visible:
+
+```python
+class Rectangle:
+    def area(self):          # self is explicit
+        return self.width * self.height
+```
+
+**Go — Receiver syntax outside the struct.** Go's approach is the closest cousin to Rust's `impl` blocks. Methods are defined *outside* the struct, with a "receiver" parameter:
+
+```go
+func (r Rectangle) area() float64 {
+    return r.width * r.height
+}
+```
+
+**JavaScript — `this` binding chaos.** Methods can be defined via prototypes or class syntax, but `this` depends on *how* the function is called, not *where* it's defined — a notorious source of bugs.
+
+#### Comparison Table
+
+| Language | Where Methods Live | Self Parameter | Standalone Fns? | Ownership in Signature? |
+|------------|------------------------------|----------------------|-----------------|-------------------------|
+| C | N/A (no methods) | Manual pointer | Yes (only fns) | No |
+| C++ | Inside `class {}` | Implicit `this` | Yes | No |
+| Java / C# | Inside `class {}` | Implicit `this` | No | No |
+| Python | Inside `class:` | Explicit `self` | Yes | No |
+| Go | Outside struct (receiver) | Explicit receiver | Yes | Pointer vs value recv |
+| JavaScript | Inside `class {}` / prototype| Implicit `this` | Yes | No |
+| **Rust** | **Separate `impl` block** | **Explicit `&self`** | **Yes** | **Yes (`&`, `&mut`, owned)** |
+
+> **The `self` debate:** Python and Rust chose *explicit* self — you always see what's being borrowed.
+> Java and C++ chose *implicit* this — less typing, but the data flow is hidden.
+> Rust goes further: the `self` parameter encodes **ownership semantics** (`&self` vs `&mut self` vs `self`),
+> something no other mainstream language does.
+
 ---
 
 ## Defining Methods
@@ -240,6 +305,68 @@ fn main() {
 
 This is why you can call `&self` methods on an owned value and `&mut self` methods on a mutable-owned value — Rust figures it out.
 
+### How Method Dispatch Works Under the Hood
+
+When you write `rect.area()`, what actually happens at the machine level? Understanding dispatch demystifies method calls and explains Rust's zero-cost abstraction promise.
+
+#### Static Dispatch (What You Get by Default)
+
+At compile time, the compiler knows the **exact concrete type** of `rect`. It resolves `rect.area()` to a specific function — no different from a plain function call in C:
+
+```
+  Your Rust code          What the compiler generates
+  ─────────────           ──────────────────────────
+  rect.area()      →      Rectangle_area(&rect)
+                           ^^^^^^^^^^^^^^^^^^^^
+                           Direct call, known at compile time
+```
+
+This is called **static dispatch** (or monomorphization when generics are involved). The compiler can **inline** the function body directly at the call site, enabling further optimizations like constant folding and loop unrolling. There is **zero runtime overhead** — it's as fast as hand-written C.
+
+#### Auto-Referencing: The Method Resolution Algorithm
+
+When you write `rect.area()` and `area` expects `&self`, Rust must figure out how to convert `rect` (an owned `Rectangle`) into `&Rectangle`. It uses this search order:
+
+```
+  Rust tries these transformations in order:
+  ┌─────────────────────────────────────────┐
+  │ 1.  T         →  Does T have area()?    │
+  │ 2.  &T        →  Does &T have area()?   │  ← matches &self
+  │ 3.  &mut T    →  Does &mut T have area()?│
+  │ 4.  deref(T)  →  repeat from step 1     │
+  │ 5.  &deref(T) →  repeat from step 2     │
+  └─────────────────────────────────────────┘
+```
+
+This is why you *never* need to write `(&rect).area()` — the compiler inserts the `&` for you. It also explains why calling methods through `Box<T>`, `Rc<T>`, or `Arc<T>` "just works": auto-deref unwraps the smart pointer, then auto-ref matches the method signature.
+
+#### Dynamic Dispatch (A Preview)
+
+Later, when you learn about trait objects (`&dyn Trait`), you'll encounter **dynamic dispatch**. Here the exact function isn't known at compile time — instead, the compiler generates a **vtable** (virtual method table):
+
+```
+  Static dispatch (default)        Dynamic dispatch (opt-in)
+  ─────────────────────────        ────────────────────────
+  rect.area()                      shape.area()  // shape: &dyn Shape
+       │                                │
+       ▼                                ▼
+  Rectangle_area(&rect)            vtable_ptr → ┌──────────────┐
+  (direct call, inlineable)                      │ area: 0x4A20 │─→ Rectangle_area
+                                                 │ perimeter: …  │
+                                                 └──────────────┘
+                                                 (pointer indirection, ~1-2ns cost)
+```
+
+| Property | Static Dispatch | Dynamic Dispatch |
+|-------------------|---------------------------|---------------------------|
+| Resolved at | Compile time | Runtime |
+| Function call | Direct (inlineable) | Indirect via vtable ptr |
+| Runtime cost | Zero | ~1-2ns per call |
+| Binary size | Larger (monomorphized) | Smaller (shared code) |
+| Opt-in syntax | Default everywhere | `dyn Trait` |
+
+> **Key insight:** Rust defaults to static dispatch everywhere. You must *explicitly* opt into dynamic dispatch with `dyn`. This is the opposite of Java/C++, where virtual/dynamic dispatch is the default and you opt *out* with `final`/non-virtual.
+
 ---
 
 ## Methods and Ownership Recap
@@ -373,6 +500,98 @@ fn main() {
     println!("Server on {}:{}", server.host, server.port);
 }
 ```
+
+### The Builder Pattern in Depth
+
+The builder above works, but *why* does this pattern exist, and when should you actually use it in Rust?
+
+#### The Core Problem: Too Many Fields
+
+Imagine a struct with 12 fields, 8 of which have sensible defaults. A `new()` function with 12 parameters is unusable:
+
+```rust
+// ❌ What are these arguments? Impossible to read.
+let server = Server::new("0.0.0.0", 3000, 500, 60, true, false, None, None, 4, "info", true, "/tmp");
+```
+
+Different languages solve this differently:
+
+| Language | Solution for Many Optional Fields |
+|------------|------------------------------------------------------|
+| Python | Keyword arguments: `Server(host="0.0.0.0", port=3000)` |
+| Kotlin | Data classes with default parameter values |
+| Java / C# | Builder pattern (the *only* clean option) |
+| Go | Functional options: `NewServer(WithPort(3000))` |
+| **Rust** | **Struct literals + Default, OR builder pattern** |
+
+#### Rust's Built-In Alternative: `Default` + Struct Update Syntax
+
+For many cases, you don't need a builder at all. The `Default` trait + struct update syntax gives you named fields with defaults:
+
+```rust
+#[derive(Default)]
+struct ServerConfig {
+    host: String,         // defaults to ""
+    port: u16,            // defaults to 0
+    max_connections: u32, // defaults to 0
+    timeout: u64,         // defaults to 0
+}
+
+let config = ServerConfig {
+    host: "0.0.0.0".to_string(),
+    port: 3000,
+    ..Default::default()  // fill the rest with defaults
+};
+```
+
+This is simpler than a builder and perfectly idiomatic. Use it when defaults are trivial.
+
+#### When Builders ARE Worth It
+
+Builders shine when you need something `Default` can't give you:
+
+1. **Validation during construction** — a `build()` method can return `Result<T, Error>`, rejecting invalid configurations
+2. **Complex defaults** — e.g., port defaults to 8080 (not 0), host defaults to `"localhost"`
+3. **Fluent API design** — chained calls read like a configuration DSL
+4. **Required vs optional fields** — the builder can enforce that certain fields *must* be set
+
+#### The Typestate Builder Pattern (Advanced)
+
+You can use Rust's type system to enforce at **compile time** that required fields are set before `build()` can be called:
+
+```rust
+// Marker types
+struct NoHost;
+struct HasHost(String);
+
+struct ServerBuilder<H> {
+    host: H,          // generic — either NoHost or HasHost
+    port: u16,
+}
+
+impl ServerBuilder<NoHost> {
+    fn new() -> Self {
+        ServerBuilder { host: NoHost, port: 8080 }
+    }
+    fn host(self, h: &str) -> ServerBuilder<HasHost> {
+        ServerBuilder { host: HasHost(h.to_string()), port: self.port }
+    }
+}
+
+impl ServerBuilder<HasHost> {
+    fn build(self) -> Server { /* only available when host is set! */ }
+}
+```
+
+This way, calling `.build()` without first calling `.host()` is a **compile error**, not a runtime panic.
+
+#### Real-World Builders in the Rust Ecosystem
+
+- **`reqwest::ClientBuilder`** — configure HTTP timeouts, proxies, TLS settings, then `.build()?`
+- **`tokio::runtime::Builder`** — choose single-threaded vs multi-threaded, set worker count, then `.build()?`
+- **`clap::Command`** (CLI parser) — chain `.arg()`, `.subcommand()`, then `.get_matches()`
+
+All of these return `Result` from `.build()` — combining the builder pattern with Rust's error handling.
 
 ---
 

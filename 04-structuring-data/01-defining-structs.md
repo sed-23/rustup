@@ -31,6 +31,84 @@
 
 ---
 
+## The History of Structured Data in Programming
+
+Before we dive into Rust structs, it helps to understand *why* they exist. Structs didn't appear from nothing — they are the result of 60+ years of programming language evolution, each generation improving on the last.
+
+### The Timeline
+
+**Assembly (1940s–50s):** There were no structured types at all. Programmers worked with raw memory addresses and offsets. "Field access" meant calculating a byte offset by hand:
+
+```
+; Pseudo-assembly: accessing a "name" field at offset 0, "age" at offset 32
+LOAD R1, [R0 + 0]    ; name
+LOAD R2, [R0 + 32]   ; age
+; Hope you got the offset right... there's no compiler to check.
+```
+
+**COBOL (1959):** The first language with named **record types**. Designed for business data processing, COBOL let you define structured data with readable field names — revolutionary at the time:
+
+```cobol
+01 EMPLOYEE-RECORD.
+   05 EMPLOYEE-NAME    PIC X(30).
+   05 EMPLOYEE-AGE     PIC 99.
+   05 EMPLOYEE-SALARY  PIC 9(7)V99.
+```
+
+**Pascal (1970):** Niklaus Wirth introduced `record` types with stronger typing than C. Pascal enforced type safety more strictly, but records were still just passive data containers.
+
+**C (1972):** Dennis Ritchie created the `struct` keyword — a minimalist abstraction that groups data fields together. C structs have no methods, no access control, and no inheritance. They are exactly what they look like: a named bag of fields.
+
+```c
+struct User {
+    char name[50];
+    int age;
+    int active;
+};
+// No methods. No constructors. Just data.
+```
+
+**C++ (1983):** Bjarne Stroustrup extended C's `struct` into `class` — adding methods, access control (`public`/`private`/`protected`), constructors, destructors, and inheritance. A `struct` in C++ is actually just a `class` with everything `public` by default.
+
+**Java (1995):** James Gosling made *everything* a class. There were no standalone structs — even simple data containers required full class ceremony with object headers, heap allocation, and garbage collection overhead. (Java didn't get lightweight `record` types until Java 14 in 2020!)
+
+**Go (2009):** Go brought structs back to basics — no inheritance, no classes. Methods are attached externally via receiver syntax. This philosophy is strikingly similar to Rust's approach.
+
+**Rust (2015):** Structs with `impl` blocks for methods, no inheritance whatsoever, and traits for polymorphism. Rust structs give you full control over memory layout, ownership semantics, and zero-cost abstractions.
+
+### The Evolution at a Glance
+
+```
+Assembly       → raw bytes, manual offsets
+    ↓
+COBOL/Pascal   → named fields, passive records
+    ↓
+C              → struct keyword, still no methods
+    ↓
+C++            → struct + methods + inheritance = class
+    ↓
+Java           → everything is a class (heavyweight)
+    ↓
+Go / Rust      → structs + external methods, NO inheritance
+```
+
+### Comparison Table
+
+| Language | Type Name | Has Methods? | Has Inheritance? | Memory Control? |
+|----------|-----------|:------------:|:----------------:|:---------------:|
+| Assembly | (none)    | —            | —                | Total (manual)  |
+| COBOL    | Record    | No           | No               | None            |
+| Pascal   | Record    | No           | No               | Minimal         |
+| C        | struct    | No           | No               | Yes (manual)    |
+| C++      | class     | Yes          | Yes              | Yes (manual)    |
+| Java     | class     | Yes          | Yes              | No (GC)         |
+| Go       | struct    | Yes (external)| No              | Partial (GC)    |
+| Rust     | struct    | Yes (impl)   | No (uses traits) | Yes (ownership) |
+
+The trend is clear: the industry moved from "bags of bytes" → "types with behavior" → **"types with behavior AND guarantees."** Rust sits at the end of this arc — structs that are safe, efficient, and expressive without the complexity of class hierarchies.
+
+---
+
 ## Why Structs?
 
 Without structs, you'd pass data around as separate variables — messy and error-prone:
@@ -338,6 +416,145 @@ fn main() {
 
 ---
 
+## Struct Memory Layout Deep Dive — Alignment, Padding, and `repr`
+
+The section above showed that Rust may reorder fields. Let's go deeper into *why* and *how* — and how you can take control when it matters.
+
+### Why CPU Alignment Matters
+
+Modern CPUs don't read memory one byte at a time. They read in **aligned chunks** (typically 4 or 8 bytes). If a 4-byte `u32` sits at address `0x03` instead of `0x04`, the CPU may need **two** memory reads instead of one — or on some architectures (ARM, MIPS), it causes a **hardware fault**.
+
+```
+Memory addresses:
+0x00  0x04  0x08  0x0C
+  |     |     |     |
+  ▼     ▼     ▼     ▼
+┌─────┬─────┬─────┬─────┐
+│     │     │     │     │  ← CPU reads in 4-byte chunks
+└─────┴─────┴─────┴─────┘
+
+Aligned u32 at 0x04:   ✅ One read
+Unaligned u32 at 0x03: ❌ Spans two chunks → slow or crash
+```
+
+To prevent this, compilers insert **padding bytes** to keep fields aligned.
+
+### Default Rust Layout vs C Layout
+
+Here's the critical difference: **Rust may reorder fields to minimize padding. C never does.**
+
+```rust
+struct Example {
+    a: u8,   // 1 byte
+    b: u32,  // 4 bytes (needs 4-byte alignment)
+    c: u8,   // 1 byte
+}
+```
+
+**C layout** (fields stay in declaration order):
+```
+┌──────┬─────────────┬──────────────┬──────┬─────────────┐
+│ a    │ pad (3)     │ b            │ c    │ pad (3)     │
+│ 1B   │ 3B          │ 4B           │ 1B   │ 3B          │
+└──────┴─────────────┴──────────────┴──────┴─────────────┘
+Total: 12 bytes
+```
+
+**Rust layout** (compiler reorders to: b, a, c):
+```
+┌──────────────┬──────┬──────┬──────────┐
+│ b            │ a    │ c    │ pad (2)  │
+│ 4B           │ 1B   │ 1B   │ 2B       │
+└──────────────┴──────┴──────┴──────────┘
+Total: 8 bytes — 33% smaller!
+```
+
+You can verify this yourself:
+
+```rust
+use std::mem;
+
+struct Example { a: u8, b: u32, c: u8 }
+
+fn main() {
+    println!("Size: {} bytes", mem::size_of::<Example>());  // 8 (Rust reordered)
+    println!("Align: {} bytes", mem::align_of::<Example>()); // 4
+}
+```
+
+### The `repr` Attributes
+
+Sometimes you *need* to control the layout precisely:
+
+#### `#[repr(C)]` — C-Compatible Layout
+
+Forces fields to stay in declaration order with C's padding rules. **Required for FFI** (Foreign Function Interface) when passing structs to C libraries:
+
+```rust
+#[repr(C)]
+struct FFIPoint {
+    x: f32,
+    y: f32,
+}
+// Guaranteed to match C's: struct FFIPoint { float x; float y; };
+```
+
+#### `#[repr(packed)]` — No Padding At All
+
+Removes all padding, saving space at the cost of unaligned access:
+
+```rust
+#[repr(packed)]
+struct Packed {
+    a: u8,
+    b: u32,
+    c: u8,
+}
+// Size: 6 bytes (1 + 4 + 1, no padding)
+// ⚠️ Taking a reference to `b` is UNSAFE — it may be unaligned!
+```
+
+#### `#[repr(align(N))]` — Force Minimum Alignment
+
+Useful for cache-line optimization (a typical cache line is 64 bytes):
+
+```rust
+#[repr(align(64))]
+struct CacheAligned {
+    data: [u8; 32],
+}
+// Size: 64 bytes (padded to fill one cache line)
+// Prevents false sharing in concurrent programs
+```
+
+### Real-World Use: Network Protocols
+
+Network packet headers have exact byte layouts defined by RFCs. You need `repr(C)` (and sometimes `repr(packed)`) to match them:
+
+```rust
+#[repr(C, packed)]
+struct EthernetHeader {
+    dst_mac: [u8; 6],
+    src_mac: [u8; 6],
+    ether_type: u16,
+}
+// Exactly 14 bytes — matches the wire format
+```
+
+### Quick Reference
+
+| Attribute | Field Order | Padding | Use Case |
+|-----------|:-----------:|:-------:|----------|
+| (default) | Compiler chooses | Optimized | Normal Rust code |
+| `repr(C)` | Declaration order | C rules | FFI, interop with C |
+| `repr(packed)` | Declaration order | None | Wire protocols, space-critical |
+| `repr(align(N))` | Compiler chooses | ≥ N alignment | Cache optimization |
+| `repr(C, packed)` | Declaration order | None | Exact binary layouts |
+
+> **Rule of thumb:** Use the default layout unless you're doing FFI or binary serialization. Rust's optimizer is smarter than manual field ordering in most cases.
+
+---
+
 ## Ownership and Structs
 
 ### Structs That Own Data
@@ -502,6 +719,153 @@ fn main() {
     println!("{} lives in {}", person.name, person.address.city);
 }
 ```
+
+---
+
+## Structs and the Type System — Zero-Cost Abstractions
+
+One of Rust's core promises is **zero-cost abstractions**: you shouldn't pay runtime overhead for using high-level types. Structs are the poster child for this philosophy.
+
+### The Newtype Pattern Is Truly Free
+
+When you write `struct Meters(f64)`, the compiler produces **exactly the same machine code** as using a raw `f64`. The wrapper is completely erased at compile time:
+
+```rust
+struct Meters(f64);
+struct Seconds(f64);
+
+fn speed(distance: Meters, time: Seconds) -> f64 {
+    distance.0 / time.0
+}
+
+fn main() {
+    let d = Meters(100.0);
+    let t = Seconds(9.58);
+    println!("Speed: {:.2} m/s", speed(d, t));
+}
+```
+
+In the compiled binary, `Meters` and `Seconds` don't exist. It's just `f64` arithmetic. You get type safety **for free**.
+
+```
+Source code:          Compiled assembly:
+─────────────         ─────────────────
+Meters(100.0)    →    movsd xmm0, [100.0]   ; just a float
+Seconds(9.58)    →    movsd xmm1, [9.58]    ; just a float
+distance.0 / t.0 →    divsd xmm0, xmm1      ; just a division
+```
+
+### Contrast: Java's Wrapper Overhead
+
+In Java, wrapping a primitive in a class is **not** free:
+
+```java
+// Java: wrapping a double
+class Meters {
+    final double value;  // 8 bytes for the double
+    // + 16 bytes object header (mark word + class pointer)
+    // + heap allocation + GC tracking
+    Meters(double v) { this.value = v; }
+}
+// Total: ~24 bytes per instance, heap allocated, GC-managed
+```
+
+```
+Rust Meters(f64):     Java new Meters(100.0):
+┌───────────────┐     ┌────────────────────────┐
+│ f64: 8 bytes  │     │ Object header: 16 bytes│
+└───────────────┘     │ value: 8 bytes         │
+Total: 8 bytes        └────────────────────────┘
+(stack, no GC)        Total: 24 bytes (heap, GC)
+```
+
+Rust's newtypes: **8 bytes, stack-allocated, no overhead.**
+Java's wrappers: **24 bytes, heap-allocated, GC-managed.**
+
+### PhantomData — The Zero-Sized Type Marker
+
+Sometimes a struct needs to *logically* be associated with a type without actually storing it. `PhantomData<T>` is a zero-sized type (ZST) that tells the compiler "this struct conceptually owns a `T`":
+
+```rust
+use std::marker::PhantomData;
+
+struct Slice<'a, T> {
+    start: *const T,
+    len: usize,
+    _marker: PhantomData<&'a T>,  // 0 bytes! Just a type-level marker.
+}
+```
+
+`PhantomData` adds **zero bytes** to your struct. It exists purely for the type system — the compiler uses it for lifetime and ownership checks, then erases it entirely.
+
+### Unit Structs — Zero Bytes, Real Power
+
+Unit structs like `struct Marker;` occupy **zero bytes** in memory. They're useful as:
+
+- **Trait implementors:** Implement a trait on a type that needs no data
+- **State markers:** In typestate patterns, different unit structs represent different states
+- **Map values:** Use as map values when you only care about keys (like a `HashSet`)
+
+```rust
+struct Locked;
+struct Unlocked;
+
+struct Door<State> {
+    _state: PhantomData<State>,
+}
+
+impl Door<Locked> {
+    fn unlock(self) -> Door<Unlocked> {
+        Door { _state: PhantomData }
+    }
+}
+
+impl Door<Unlocked> {
+    fn lock(self) -> Door<Locked> {
+        Door { _state: PhantomData }
+    }
+    fn open(&self) { println!("Door opened!"); }
+}
+// Door<Locked> and Door<Unlocked> are different types!
+// You CAN'T call .open() on a locked door — the compiler prevents it.
+// Total runtime cost of this state tracking: ZERO bytes.
+```
+
+### Real-World Example: Units of Measurement
+
+The newtype pattern prevents catastrophic unit confusion (like the [Mars Climate Orbiter](https://en.wikipedia.org/wiki/Mars_Climate_Orbiter) crash, caused by a metric/imperial mixup):
+
+```rust
+struct Meters(f64);
+struct Feet(f64);
+struct Kilograms(f64);
+struct Pounds(f64);
+
+fn calculate_thrust(mass: Kilograms, distance: Meters) -> f64 {
+    mass.0 * distance.0  // simplified
+}
+
+fn main() {
+    let mass = Kilograms(500.0);
+    let dist = Meters(1000.0);
+    // calculate_thrust(Pounds(500.0), dist);  // ❌ Compile error!
+    // calculate_thrust(mass, Feet(1000.0));   // ❌ Compile error!
+    calculate_thrust(mass, dist);              // ✅ Types match
+}
+```
+
+### The Rust Philosophy
+
+> **"Types are free at runtime. An expressive type system is the sign of a good model."**
+
+In Rust, adding more types (newtypes, unit structs, phantom markers) costs you **nothing** at runtime. The compiler works hard during compilation so the CPU does less work during execution. This is the opposite of many languages where more abstraction = more overhead.
+
+| Abstraction | Runtime Size | Runtime Cost | Compiler Cost |
+|-------------|:------------:|:------------:|:-------------:|
+| `struct Meters(f64)` | 8 bytes (= raw f64) | Zero | Type checking |
+| `struct Marker;` | 0 bytes | Zero | Type checking |
+| `PhantomData<T>` | 0 bytes | Zero | Lifetime/ownership checking |
+| Typestate pattern | 0 bytes | Zero | State machine verification |
 
 ---
 

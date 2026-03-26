@@ -48,6 +48,78 @@ fn main() {
 
 ---
 
+### The Evolution of Enums — From C to Rust
+
+Rust's enums didn't appear out of nowhere. They represent decades of programming language evolution — from simple named integers to full algebraic data types. Understanding this history helps you appreciate *why* Rust enums work the way they do.
+
+**C enums (1972)** were the simplest possible approach — just named integer constants:
+
+```c
+// C — enums are just integers in disguise
+enum Color { RED = 0, GREEN = 1, BLUE = 2 };
+enum Color c = 42;  // Compiles! No type safety at all.
+```
+
+A C enum provides zero guarantees. Any integer can be assigned to an enum variable, and variants cannot carry data.
+
+**Java enums (2004)** improved things by making each variant a class instance:
+
+```java
+// Java — variants are singleton objects, but all share the same fields
+enum Planet {
+    EARTH(5.97e24, 6.37e6),
+    MARS(6.42e23, 3.39e6);
+    final double mass, radius;
+    Planet(double m, double r) { mass = m; radius = r; }
+}
+```
+
+Java enums are type-safe and can have methods, but every variant must have the **same fields** — you can't have one variant hold a `String` and another hold two `f64`s.
+
+**Haskell (1990)** introduced **algebraic data types (ADTs)** — the academic ancestor of Rust's enums:
+
+```haskell
+-- Haskell — each variant (constructor) can hold different data
+data Shape = Circle Double | Rectangle Double Double | Triangle Double Double
+```
+
+**ML family (OCaml, F#)** calls them **discriminated unions** or **variant types** — same concept, different name. **Swift** calls them enums with **associated values** — Swift and Rust influenced each other heavily. **TypeScript** achieves something similar with **discriminated unions** using type guards:
+
+```typescript
+// TypeScript — manual "tagged union" pattern
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "rect"; width: number; height: number };
+```
+
+Rust took the algebraic data type concept from Haskell/ML and made it **mainstream** — no PhD required.
+
+#### Sum Types vs Product Types
+
+An enum is a **sum type** — a value is ONE of several variants (like *addition* of possibilities). A struct is a **product type** — a value contains ALL fields (like *multiplication* of possibilities):
+
+```
+Sum type (enum):     # of possible values = V1 + V2 + V3
+Product type (struct): # of possible values = F1 × F2 × F3
+
+enum Light { Red, Yellow, Green }       → 3 possible values (1 + 1 + 1)
+struct Point { x: bool, y: bool }       → 4 possible values (2 × 2)
+```
+
+| Language | Enum Name | Can Hold Data? | Type-Safe? | Pattern Matchable? |
+|------------|----------------------|----------------|------------|--------------------|
+| C | `enum` | No | No | No |
+| Java | `enum` | Yes (same shape) | Yes | Limited (switch) |
+| Haskell | Algebraic data type | Yes (per-variant) | Yes | Yes |
+| OCaml / F# | Discriminated union | Yes (per-variant) | Yes | Yes |
+| Swift | `enum` (assoc. vals) | Yes (per-variant) | Yes | Yes |
+| TypeScript | Discriminated union | Yes (per-variant) | Partial | Yes (type guards) |
+| **Rust** | **`enum`** | **Yes (per-variant)** | **Yes** | **Yes (exhaustive)** |
+
+Rust enums combine the best of all worlds: the familiarity of C-style syntax, the power of Haskell ADTs, and the compiler-enforced exhaustive matching that catches bugs at compile time.
+
+---
+
 ## Simple Enums (C-style)
 
 Enums where variants have no data — just named choices:
@@ -215,6 +287,90 @@ Variant D: [tag=3][ ptr ][ len ][ cap ]
 
 The discriminant tells Rust which variant is stored. The unused space is padding — it's allocated but not used by smaller variants.
 
+### Deep Dive — The Discriminant and Niche Optimization
+
+Every enum value contains a hidden **discriminant** (also called a **tag**) — a small integer that tells the runtime which variant is currently stored. The compiler automatically chooses the smallest sufficient integer type:
+
+```
+  ≤ 256 variants  →  u8  (1 byte discriminant)
+  ≤ 65,536 variants  →  u16 (2 bytes)
+  ... and so on
+```
+
+You can explicitly control the discriminant size with `#[repr]` — essential for **FFI** (calling C code):
+
+```rust
+#[repr(u32)]  // Force 4-byte discriminant for C compatibility
+enum CStatus {
+    Ok = 0,
+    Error = 1,
+    Timeout = 2,
+}
+```
+
+**Size formula:** `size_of::<Enum>() = discriminant + LARGEST variant + padding`
+
+Let's trace a concrete example:
+
+```rust
+enum Msg {
+    Quit,                        // 0 bytes payload
+    Echo(String),                // 24 bytes (ptr + len + cap)
+    Move { x: i32, y: i32 },    // 8 bytes
+}
+// discriminant: 1 byte (only 3 variants)
+// largest variant: 24 bytes (String)
+// alignment: 8 bytes (String contains pointers)
+// total: 32 bytes (1 + 24 = 25, rounded up to 32 for alignment)
+```
+
+```
+┌──────────┬─────────────────────────────────────────────┐
+│ tag (1B) │ padding (7B) │ payload area (24B)           │
+├──────────┼─────────────────────────────────────────────┤
+│ Quit   0 │ ---- empty --------------------------------│
+│ Echo   1 │              │ ptr(8) │ len(8) │ cap(8)     │
+│ Move   2 │              │  x(4)  │  y(4)  │ unused(16) │
+└──────────┴─────────────────────────────────────────────┘
+```
+
+#### Niche Optimization — Zero-Cost Optionals
+
+Here's where Rust does something **remarkable**. Consider `Option<&T>` — you'd expect it to be 16 bytes (8 for the reference + 8 for the discriminant with alignment). But it's only **8 bytes** — the same size as a bare `&T`!
+
+How? A valid reference can **never** be null (address `0x0`). The compiler recognizes this "niche" — an invalid bit pattern — and reuses it as the `None` discriminant:
+
+```
+Option<&T> layout (8 bytes total — no extra discriminant!):
+ ┌───────────────────────────────────┐
+ │ Some(&T):  0x00007fff4a2b (valid) │  ← any non-zero address
+ │ None:      0x000000000000 (null)  │  ← null means None
+ └───────────────────────────────────┘
+```
+
+This is called **niche filling** — the compiler finds bit patterns that are invalid for the inner type and reuses them. More examples:
+
+```rust
+use std::mem::size_of;
+use std::num::NonZeroU32;
+
+assert_eq!(size_of::<Option<&i32>>(),     8);  // same as &i32!
+assert_eq!(size_of::<Option<NonZeroU32>>(), 4);  // same as u32!
+assert_eq!(size_of::<Option<bool>>(),     1);  // same as bool!
+assert_eq!(size_of::<Option<Box<i32>>>(),  8);  // same as Box<i32>!
+```
+
+| Type | Size | `Option<T>` Size | Overhead |
+|------|------|-------------------|----------|
+| `&T` | 8 | 8 | **0 bytes** |
+| `Box<T>` | 8 | 8 | **0 bytes** |
+| `NonZeroU32` | 4 | 4 | **0 bytes** |
+| `bool` | 1 | 1 | **0 bytes** |
+| `u32` | 4 | 8 | 4 bytes |
+| `String` | 24 | 32 | 8 bytes |
+
+This optimization is **unique to Rust** among mainstream languages. In Java, every `Optional<T>` allocates a separate object on the heap. In C++, `std::optional<T>` always adds at least one byte. Rust's niche filling means you can use `Option` everywhere with literally zero runtime cost for pointer-like types.
+
 ---
 
 ## Enums and `impl`
@@ -291,6 +447,81 @@ impl OrderStatus {
     }
 }
 ```
+
+### Enums as State Machines — A Design Pattern Deep Dive
+
+State machines are **everywhere** in programming: HTTP request lifecycles, game entities, UI component states, protocol parsers, text editors — any time something transitions through well-defined stages. Let's examine why enums are the ideal tool for modeling them.
+
+**The traditional OOP approach** uses the State design pattern — an interface with virtual methods and a different class for each state:
+
+```
+OOP State Pattern:                     Rust Enum Approach:
+┌─────────────┐                        ┌──────────────────────────┐
+│ «interface»  │                        │ enum ConnState {         │
+│ State        │                        │   Listening,             │
+│  +handle()   │                        │   Connected { addr },    │
+├─────────────┤                        │   Transferring { bytes },│
+│ Listening    │  ← heap-allocated      │   Closed { reason },     │
+│ Connected    │  ← runtime dispatch    │ }                        │
+│ Transferring │  ← hard to see         │                          │
+│ Closed       │    all states          │ // All states visible in │
+└─────────────┘                        │ // one place. Compiler   │
+                                       │ // enforces exhaustive   │
+                                       │ // handling.             │
+                                       └──────────────────────────┘
+```
+
+Consider a TCP-like connection modeled as an enum:
+
+```rust
+enum TcpState {
+    Listen,
+    SynReceived { peer: String },
+    Established { peer: String, bytes_sent: u64 },
+    FinWait { remaining_acks: u32 },
+    Closed,
+}
+
+impl TcpState {
+    fn transition(self, event: &str) -> TcpState {
+        match (self, event) {
+            (TcpState::Listen, "syn") =>
+                TcpState::SynReceived { peer: "client".into() },
+            (TcpState::SynReceived { peer }, "ack") =>
+                TcpState::Established { peer, bytes_sent: 0 },
+            (TcpState::Established { peer, .. }, "fin") =>
+                TcpState::FinWait { remaining_acks: 1 },
+            (TcpState::FinWait { remaining_acks: 0 }, "timeout") =>
+                TcpState::Closed,
+            (state, _) => state,  // Invalid transition — stay in current state
+        }
+    }
+}
+```
+
+#### Why This Beats String-Based States
+
+In JavaScript or Python, states are often represented as strings:
+
+```
+Python:  order.status = "shiped"   ← typo compiles, bug at runtime
+Rust:    OrderStatus::Shiped       ← compiler error: variant not found
+```
+
+This embodies the **"making illegal states unrepresentable"** philosophy: if your code compiles, it's impossible for the system to be in an undefined state. You cannot accidentally create an `OrderStatus` that doesn't exist, and you cannot forget to handle a variant (the match exhaustiveness checker will catch it).
+
+#### Closed vs Open State Sets
+
+Enums model **closed** sets of states — all possibilities are known at compile time. This is perfect for protocols, parsers, and business logic. For **open-ended** sets of states (e.g., plugin systems where new states can be added later), use trait objects instead:
+
+```
+Closed set (enum):  All variants known → exhaustive matching → maximum safety
+Open set (trait):   New impls can be added → runtime dispatch → maximum flexibility
+```
+
+Real-world Rust libraries lean heavily on this pattern. The `serde` library models data formats with enums (`Value::String`, `Value::Number`, `Value::Array`, ...). The `http` crate models request methods (`Method::GET`, `Method::POST`, ...). The `syn` crate (Rust's own parser) represents the entire Rust syntax tree as nested enums.
+
+The connection to formal methods is real: enum-based state machines bring the rigor of **formal verification** into everyday code — the compiler acts as a lightweight model checker, ensuring every state transition is accounted for.
 
 ---
 
