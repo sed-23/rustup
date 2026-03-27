@@ -35,6 +35,88 @@ let (x, y) = point;
 println!("x = {}, y = {}", x, y);  // x = 3, y = 4
 ```
 
+### Destructuring Across Programming Languages
+
+Destructuring isn't unique to Rust — it's a concept that originated in functional languages and has
+spread across the programming world. Understanding how other languages handle it helps you appreciate
+what Rust brings to the table.
+
+**JavaScript (ES6, 2015)** — probably the most widely known destructuring syntax:
+
+```javascript
+const { name, age } = person;          // Object destructuring
+const [first, ...rest] = arr;          // Array destructuring with rest
+const { a: { b: { c } } } = nested;   // Nested
+```
+
+**Python** — tuple unpacking has existed since Python 2, but there's no struct/dict destructuring:
+
+```python
+x, y, z = point            # Tuple unpacking
+first, *rest = [1, 2, 3]   # Extended unpacking (Python 3)
+# No equivalent of: { name, age } = person_dict
+```
+
+**Haskell** — pattern matching IS destructuring. They are the same concept:
+
+```haskell
+case point of (x, y) -> x + y      -- Tuple
+let (Just val) = maybeValue          -- "Enum" (Maybe)
+```
+
+**Kotlin** — requires `componentN()` functions (destructuring declarations):
+
+```kotlin
+val (name, age) = person   // Calls person.component1(), person.component2()
+val (key, value) = pair
+```
+
+**Swift** — tuple decomposition plus enum associated value matching:
+
+```swift
+let (x, y) = point
+case .success(let data) = result   // Enum pattern
+```
+
+**Go** — a limited form: multiple return value unpacking only:
+
+```go
+x, err := someFunction()   // That's it — no struct or slice destructuring
+```
+
+**C++17** — structured bindings, added 45 years after the birth of C:
+
+```cpp
+auto [x, y, z] = std::make_tuple(1, 2, 3);
+auto [key, value] = *map.begin();
+```
+
+**The historical pattern:**
+
+```
+1980s-90s  Functional languages (ML, Haskell) — pattern matching is core
+2009       Clojure — first-class destructuring in a Lisp
+2010       Rust (pre-1.0) — deep pattern matching from day one
+2015       JavaScript ES6 — destructuring goes mainstream
+2016       Kotlin 1.0 — componentN() declarations
+2017       C++17 — structured bindings
+```
+
+> Destructuring started in functional languages and has been adopted by mainstream languages
+> over the past decade. Rust's version is deeply integrated with its pattern matching
+> system — more powerful than JavaScript's but built on the same fundamental concept.
+
+| Language   | Tuples | Structs/Objects | Enums/Unions | Nested | In Fn Params |
+|------------|--------|-----------------|--------------|--------|--------------|
+| Rust       | ✅     | ✅              | ✅           | ✅     | ✅           |
+| JavaScript | ✅     | ✅              | ❌           | ✅     | ✅           |
+| Python     | ✅     | ❌              | ❌           | ✅     | ❌           |
+| Haskell    | ✅     | ✅              | ✅           | ✅     | ✅           |
+| Kotlin     | ✅     | ✅              | ✅           | ❌     | ❌           |
+| Swift      | ✅     | ❌              | ✅           | ✅     | ❌           |
+| Go         | ❌     | ❌              | ❌           | ❌     | ❌           |
+| C++17      | ✅     | ✅              | ❌           | ❌     | ❌           |
+
 ---
 
 ## Destructuring Tuples
@@ -266,6 +348,90 @@ fn main() {
 }
 ```
 
+### Destructuring and Ownership — Rust's Unique Twist
+
+In most languages, destructuring is a **purely syntactic convenience** — you extract values and move on.
+In Rust, destructuring interacts with the **ownership system**, and that changes everything.
+
+**Moving fields out of a struct:**
+
+When you destructure a struct by value, you **move** each field out (unless the field is `Copy`):
+
+```rust
+struct Player {
+    name: String,   // Not Copy — will be moved
+    score: u32,     // Copy — will be copied
+}
+
+let player = Player { name: String::from("Alice"), score: 42 };
+let Player { name, score } = player;
+
+// `name` now owns the String, `score` is a copy of 42
+println!("{}: {}", name, score);  // ✅ Works
+// println!("{}", player.name);   // ❌ Error: player.name was moved
+// println!("{}", player.score);  // ❌ Error: player is partially moved
+```
+
+After partial destructuring, the struct is **partially moved** — you can't use it as a whole.
+
+**Using `ref` to borrow instead of move:**
+
+```rust
+let player = Player { name: String::from("Alice"), score: 42 };
+let Player { ref name, score } = player;
+
+// `name` is &String (borrowed), `score` is u32 (copied)
+println!("{}: {}", name, score);  // ✅
+println!("{}", player.name);      // ✅ Still valid — we only borrowed
+```
+
+**Pattern binding modes (RFC 2005) — automatic borrowing:**
+
+```rust
+let player = Player { name: String::from("Alice"), score: 42 };
+let Player { name, score } = &player;  // Note the & on the right side
+
+// Rust sees `&player` and automatically binds `name` as &String
+// This is equivalent to writing `ref name` explicitly
+println!("{}: {}", name, score);  // ✅
+println!("{}", player.name);      // ✅ player is still fully intact
+```
+
+**How this differs from JavaScript:**
+
+```
+    JavaScript                          Rust
+    ──────────────────────────          ──────────────────────────
+    const { name } = person;            let Player { name, .. } = player;
+    // `name` is a reference              // `name` MOVES the String out
+    // to the same string object          // `player.name` is now invalid
+    person.name === name  // true         // No equivalent — value moved
+
+    // JS always copies primitives        // Rust copies only Copy types
+    // and shares references              // and moves everything else
+```
+
+**The `..` pattern and safety:**
+
+```rust
+struct Config {
+    name: String,
+    debug: bool,
+    retries: u32,
+    timeout_ms: u64,
+}
+
+let config = Config { name: "app".into(), debug: true, retries: 3, timeout_ms: 5000 };
+let Config { name, .. } = config;
+// `name` was moved out, `debug`, `retries`, `timeout_ms` are dropped
+// Rust tracks exactly which fields were moved and which weren't
+```
+
+> **Key insight:** In Rust, destructuring is not just syntax — it's a **transfer of ownership**.
+> The compiler tracks every field individually, ensuring you never use moved data.
+> This is what makes Rust's destructuring both more powerful and more disciplined than
+> any garbage-collected language.
+
 ---
 
 ## Destructuring in `for` Loops
@@ -330,6 +496,124 @@ fn handle(commands: &[Command]) {
     }
 }
 ```
+
+### Real-World Destructuring Patterns
+
+Beyond the basics, destructuring becomes a daily tool in idiomatic Rust. Here are the
+patterns experienced Rust developers use constantly.
+
+**Pattern 1: Destructure directly in function signatures**
+
+```rust
+// Instead of accessing fields inside the body...
+fn distance(p1: &(f64, f64), p2: &(f64, f64)) -> f64 {
+    ((p1.0 - p2.0).powi(2) + (p1.1 - p2.1).powi(2)).sqrt()
+}
+
+// ...destructure in the signature itself:
+fn distance(&(x1, y1): &(f64, f64), &(x2, y2): &(f64, f64)) -> f64 {
+    ((x1 - x2).powi(2) + (y1 - y2).powi(2)).sqrt()
+}
+```
+
+**Pattern 2: Match + destructure in one step**
+
+```rust
+enum Event {
+    Click { x: i32, y: i32, button: u8 },
+    Scroll { delta: f64 },
+    KeyPress(char),
+}
+
+fn handle(event: &Event) {
+    match event {
+        Event::Click { x, y, button } => println!("Click btn {} at ({},{})", button, x, y),
+        Event::Scroll { delta } if *delta > 0.0 => println!("Scroll up {}", delta),
+        Event::Scroll { delta } => println!("Scroll down {}", delta),
+        Event::KeyPress(c) => println!("Key: {}", c),
+    }
+}
+```
+
+**Pattern 3: Arbitrarily deep nested destructuring**
+
+```rust
+struct Point { x: f64, y: f64 }
+
+let pair = (10, 20);
+let point = Point { x: 3.0, y: 4.0 };
+let ((a, b), Point { x, y }) = (pair, point);
+// a=10, b=20, x=3.0, y=4.0 — all extracted in one statement
+```
+
+**Pattern 4: Destructuring in `for` loops — extremely common**
+
+```rust
+let names = vec!["Alice", "Bob", "Charlie"];
+
+// enumerate gives (index, value) tuples — destructure them:
+for (i, name) in names.iter().enumerate() {
+    println!("#{}: {}", i + 1, name);
+}
+
+// zip two iterators and destructure:
+let scores = vec![95, 87, 91];
+for (name, score) in names.iter().zip(scores.iter()) {
+    println!("{}: {}", name, score);
+}
+```
+
+**Pattern 5: `if let` chains with destructuring**
+
+```rust
+struct Point { x: f64, y: f64 }
+
+let maybe_point: Option<Point> = Some(Point { x: 1.0, y: 2.0 });
+
+if let Some(Point { x, y }) = &maybe_point {
+    println!("Got point at ({}, {})", x, y);
+}
+```
+
+**Advanced: `@` bindings — destructure AND keep the whole value**
+
+```rust
+#[derive(Debug)]
+struct Point { x: i32, y: i32 }
+
+let point = Point { x: 5, y: 12 };
+
+match point {
+    p @ Point { x: 0..=10, y: 0..=10 } => {
+        println!("{:?} is in the 10x10 box", p);  // Use the whole struct
+    }
+    p @ Point { x, y } => {
+        println!("{:?} is outside at ({}, {})", p, x, y);  // Use both
+    }
+}
+```
+
+> The `@` binding says "match this pattern, but also bind the entire value to a name."
+> This lets you inspect the structure AND keep a handle to the whole thing.
+
+**Anti-pattern: Over-destructuring**
+
+```rust
+// ❌ Over-destructured — harder to read when you only need one field:
+let Point { x, y: _ } = &point;
+println!("x = {}", x);
+
+// ✅ Just use dot notation:
+println!("x = {}", point.x);
+```
+
+**Rule of thumb:** Destructure when you use **multiple fields** in a computation.
+Use dot notation when accessing **one or two fields**.
+
+> **Connection to functional programming:** Destructuring is a form of *structural
+> pattern matching* — your code "sees through" the shape of data and extracts
+> exactly what it needs. This is why languages with strong pattern matching
+> (Haskell, OCaml, Rust) tend to produce concise, readable code.
 
 ---
 
