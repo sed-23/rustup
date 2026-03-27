@@ -21,6 +21,49 @@
 
 ---
 
+### Hash Tables Across Programming Languages
+
+The hash table is arguably the **most important data structure in computer science**. Its O(1) average-case lookup, insertion, and deletion make it the backbone of everything from databases and caches to compilers and interpreters. Every major language has one — but the implementations differ wildly.
+
+```
+           The Universal Data Structure
+           ============================
+
+  Language    Type Name         What Happens Under the Hood
+  ─────────   ──────────────    ────────────────────────────────────
+  Python      dict              Open addressing + random probing
+  JavaScript  Map / Object      V8 hidden classes / hash table
+  Java        HashMap           Separate chaining → red-black trees
+  C++         unordered_map     Separate chaining (cache-unfriendly)
+  Go          map               Hash table with 8-entry buckets
+  Rust        HashMap           SwissTable (hashbrown) + SipHash
+```
+
+**Python `dict`:** Since Python 3.6, dictionaries preserve insertion order. Internally, CPython uses open addressing with pseudo-random probing. The hash table is split into a dense array of entries and a sparse index table, which makes iteration fast and memory-efficient.
+
+**JavaScript `Map`/`Object`:** V8 (the engine behind Node.js and Chrome) uses "hidden classes" to optimize plain objects — they behave more like structs than hash tables when keys are known at compile time. `Map` is a proper hash table for dynamic key-value storage.
+
+**Java `HashMap`:** Uses separate chaining — each bucket is a linked list. Since Java 8, when a single chain exceeds 8 elements, it converts to a **red-black tree** to avoid O(n) worst-case lookups. Load factor threshold is 0.75.
+
+**C++ `std::unordered_map`:** Also separate chaining. Notoriously **cache-unfriendly** because each bucket is a pointer-linked list scattered across memory. This is one area where C++ performs significantly worse than Rust.
+
+**Go `map`:** A built-in type backed by a hash table with buckets holding 8 key-value pairs each. Overflow buckets are chained when a bucket fills up. Maps are not safe for concurrent use — you need `sync.Map` or a mutex.
+
+**Rust `HashMap`:** Uses **SwissTable** (from the `hashbrown` crate) — one of the fastest hash table implementations in any language. Developed at Google for their Abseil C++ library, Rust adopted it in 2019 (Rust 1.36). SwissTable uses SIMD instructions to probe **16 slots simultaneously**, making it dramatically faster than traditional implementations.
+
+| Language | Type | Strategy | Preserves Order? | Default Hash |
+|----------|------|----------|------------------|--------------|
+| Python | `dict` | Open addressing | Yes (3.6+) | SipHash 1-3 |
+| JavaScript | `Map` | Hash table | Yes (spec) | V8 internal |
+| Java | `HashMap` | Chaining → RB-tree | No (`LinkedHashMap` does) | `hashCode()` |
+| C++ | `unordered_map` | Separate chaining | No | `std::hash` |
+| Go | `map` | Buckets of 8 | No | AES-based |
+| Rust | `HashMap` | SwissTable (flat) | No (`IndexMap` does) | SipHash 1-3 |
+
+> **Key takeaway:** Rust's `HashMap` is backed by SwissTable — the same algorithm Google built for Abseil. It's one of the fastest general-purpose hash tables in production, often **2-3× faster** than C++ `unordered_map` for the same workloads.
+
+---
+
 ## Creating HashMaps
 
 ```rust
@@ -191,6 +234,101 @@ fn main() {
 
 ---
 
+### The Entry API — One of Rust's Most Elegant Designs
+
+The "check if a key exists, then insert or update" pattern is incredibly common — and in most languages, it requires **two separate lookups**:
+
+```
+  The Two-Lookup Problem (every other language)
+  ═════════════════════════════════════════════
+
+  Step 1: LOOK UP the key  →  hash, find bucket, compare keys
+  Step 2: INSERT/UPDATE     →  hash, find bucket, compare keys (AGAIN!)
+
+  Rust's Entry API:
+  ═════════════════
+  Step 1: entry(key)        →  hash, find bucket, return a HANDLE
+  Step 2: or_insert(val)    →  use the handle. No second lookup!
+```
+
+Here's how other languages solve (or don't solve) this problem:
+
+**Python:**
+```python
+# Option 1: Two lookups
+if key not in d:
+    d[key] = default
+# Option 2: setdefault (one call, but always creates the default)
+d.setdefault(key, default)
+# Option 3: defaultdict (changes the container type entirely)
+from collections import defaultdict
+d = defaultdict(int)
+d[key] += 1
+```
+
+**Java (8+):**
+```java
+// computeIfAbsent — uses a lambda, but it's a method on the Map
+map.computeIfAbsent(key, k -> expensiveComputation());
+// merge — for combining values
+map.merge(key, 1, Integer::sum);
+```
+
+**JavaScript / Go — no built-in solution:**
+```javascript
+// JavaScript: manual check every time
+if (!map.has(key)) map.set(key, defaultValue);
+```
+```go
+// Go: manual check every time
+if _, ok := m[key]; !ok {
+    m[key] = defaultValue
+}
+```
+
+**Rust's entry API: ONE lookup, zero-cost abstraction:**
+```rust
+map.entry(key).or_insert(default);          // Simple default
+map.entry(key).or_insert_with(|| f());      // Lazy — only computes if absent
+map.entry(key).or_default();                // Uses Default trait
+*map.entry(key).or_insert(0) += 1;          // The classic counter idiom
+```
+
+Under the hood, `entry()` returns an **enum**:
+
+```rust
+pub enum Entry<'a, K, V> {
+    Occupied(OccupiedEntry<'a, K, V>),  // Key exists — here's a &mut V
+    Vacant(VacantEntry<'a, K, V>),      // Key absent — ready to insert
+}
+```
+
+You can match on it for complex logic:
+```rust
+use std::collections::hash_map::Entry;
+match map.entry(key) {
+    Entry::Occupied(mut e) => {
+        *e.get_mut() += 1;            // Update existing
+    }
+    Entry::Vacant(e) => {
+        e.insert(compute_initial());  // Insert new
+    }
+}
+```
+
+| Language | Idiom | Lookups | Lazy? |
+|----------|-------|---------|-------|
+| Python | `d.setdefault(k, v)` | 1 | No (always creates default) |
+| Python | `defaultdict` | 1 | Yes (factory function) |
+| Java | `computeIfAbsent(k, fn)` | 1 | Yes (lambda) |
+| JavaScript | `if (!has) set` | 2 | N/A |
+| Go | `if _, ok; !ok` | 2 | N/A |
+| Rust | `entry(k).or_insert(v)` | **1** | **Yes** (`or_insert_with`) |
+
+> **The origin story:** Rust's Entry API was designed *because* the borrow checker makes the naive "check then insert" pattern impossible — you'd need both an immutable borrow (to check) and a mutable borrow (to insert) simultaneously. Rather than working around this limitation, the Rust team turned it into the **most ergonomic conditional-insert API** in any mainstream language. A limitation became an elegant solution.
+
+---
+
 ## Removing Entries
 
 ```rust
@@ -330,6 +468,71 @@ Buckets:      │ 0 │ 1 │ 2 │ ... │ i │ ... │ n-1 │
 - Default hasher: SipHash 1-3 (DOS-resistant, not the fastest)
 - All primitive types, `String`, `&str` implement `Hash`
 - **Floats (`f32`, `f64`) do NOT implement `Hash`** (because NaN != NaN)
+
+---
+
+### How Hashing Actually Works — Inside SwissTable
+
+Rust's default hasher is **SipHash 1-3** — a cryptographic-quality hash function that trades raw speed for **security against HashDoS attacks**.
+
+**What is HashDoS?** An attacker crafts input keys that ALL hash to the same bucket. With separate chaining, every insertion and lookup degrades to O(n), turning your O(n) algorithm into O(n²). In 2011, researchers demonstrated HashDoS against PHP, Java, Python, and Ruby web frameworks — a single HTTP request with carefully crafted POST parameters could lock up a server for minutes.
+
+```
+  Normal Distribution              HashDoS Attack
+  ════════════════════             ════════════════════
+  Bucket 0: ●●                    Bucket 0:
+  Bucket 1: ●●●                   Bucket 1:
+  Bucket 2: ●                     Bucket 2: ●●●●●●●●●●●●●●●●
+  Bucket 3: ●●                    Bucket 3:
+  Bucket 4: ●●●●                  Bucket 4:
+  → O(1) lookups                  → O(n) lookups = total O(n²)
+```
+
+Rust defaults to SipHash for safety. For performance-critical code where DoS isn't a concern (game engines, compilers, offline processing), you can switch to faster hashers:
+
+- **FxHash** (`rustc-hash` crate): Used inside the Rust compiler itself. ~3-5× faster than SipHash
+- **AHash** (`ahash` crate): Uses AES hardware instructions when available. Default in `hashbrown` directly
+- **xxHash**, **wyhash**: Other fast alternatives for non-adversarial data
+
+**SwissTable Internal Layout:**
+
+```
+  Traditional Hash Table:           SwissTable:
+  ┌──────────────────────┐          ┌─────────────┐  ┌──────────────────────┐
+  │ Bucket 0 → linked    │          │ Control     │  │ Slots (flat array)   │
+  │ Bucket 1 → linked    │          │ Bytes (1B   │  │ [KV][KV][KV][KV]... │
+  │ Bucket 2 → linked    │          │ per slot)   │  │                      │
+  │ ...pointers everywhere│          │ [H2|H2|H2]  │  │ Cache-friendly!      │
+  └──────────────────────┘          └─────────────┘  └──────────────────────┘
+                                    ↑ SIMD scans 16 at once
+```
+
+SwissTable replaces the traditional bucket-and-chain approach with:
+1. **A flat array of slots** — key-value pairs stored contiguously in memory (cache-friendly)
+2. **A separate array of control bytes** — one byte per slot encoding the slot's state
+
+Each control byte is either:
+- `0xFF` — the slot is **empty**
+- `0x80` — the slot was **deleted** (tombstone)
+- Top 7 bits of the hash (called **H2**) — the slot is **occupied**
+
+**The SIMD trick:** When looking up a key, SwissTable:
+1. Hashes the key → uses the low bits to find a **group of 16 slots**
+2. Loads 16 control bytes into a SIMD register (one CPU instruction)
+3. Compares all 16 against the H2 hash value **simultaneously** (one instruction!)
+4. Only checks actual key equality for the 0-2 slots that matched
+
+This is why `hashbrown` (SwissTable) is **~2× faster** than traditional implementations — it probes 16 candidates in the time it takes others to probe 1.
+
+| Property | Traditional (Java/C++) | SwissTable (Rust) |
+|----------|----------------------|-------------------|
+| Layout | Buckets + linked lists | Flat array + control bytes |
+| Probing | One slot at a time | 16 slots via SIMD |
+| Load factor | 75% (Java) | 87.5% (7/8) |
+| Cache behavior | Pointer chasing | Linear, cache-friendly |
+| Empty overhead | 8 bytes/bucket | 1 byte/slot |
+
+> **Practical impact:** If you're coming from C++ `unordered_map`, Rust's `HashMap` is likely **2-3× faster** for the same operations — and it's the *default*, with zero extra configuration.
 
 ---
 

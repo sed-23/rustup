@@ -33,6 +33,59 @@
 
 ---
 
+### The 80/20 Rule of Collections
+
+In real-world Rust codebases, the vast majority of collection usage boils down to just **two types**: `Vec` and `HashMap`. Understanding this distribution saves you from choice paralysis.
+
+#### Usage Distribution in Practice
+
+```
+  Collection Usage in Real Rust Codebases (approximate)
+  ┌──────────────────────────────────────────────────────────┐
+  │ Vec<T>      ████████████████████████████████████░░  ~60% │
+  │ HashMap     ████████████░░░░░░░░░░░░░░░░░░░░░░░░░  ~20% │
+  │ String      ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ~15% │
+  │ Everything  ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   ~5% │
+  │ else                                                     │
+  └──────────────────────────────────────────────────────────┘
+```
+
+This pattern holds across the Rust standard library survey (2020) and aligns with other languages:
+
+| Language | "The List" | "The Map" | Combined % |
+|----------|-----------|----------|------------|
+| Rust | `Vec` | `HashMap` | ~80% |
+| Python | `list` | `dict` | ~80% |
+| Java | `ArrayList` | `HashMap` | ~75% |
+| Go | slice | `map` | ~85% |
+| C++ | `std::vector` | `std::unordered_map` | ~70% |
+
+#### Why Just Two?
+
+Most real programs are doing one of two things:
+
+1. **"Process a list of things"** — reading records, transforming data, filtering results → `Vec`
+2. **"Look up things by key"** — caching, counting, indexing, deduplication → `HashMap`
+
+#### The Learning Strategy
+
+> **Master `Vec` and `HashMap` first.** They cover ~80% of your needs. The rest — `BTreeMap`, `VecDeque`, `BinaryHeap` — are specialized tools you learn when a specific problem demands them.
+
+#### Beyond std: Popular Collection Crates
+
+When the standard library isn't enough, the ecosystem has you covered:
+
+| Crate | What It Is | Use When |
+|-------|-----------|----------|
+| `indexmap` | Insertion-ordered `HashMap` | You need map iteration in insertion order |
+| `smallvec` | Stack-allocated small `Vec` | Most of your vecs hold ≤ N elements |
+| `tinyvec` | Like `smallvec` but no `unsafe` | You want stack-small vecs without unsafe |
+| `slab` | Pre-allocated arena with stable keys | You need O(1) insert/remove with integer keys |
+| `dashmap` | Concurrent `HashMap` | You need shared map access across threads |
+| `im` | Immutable/persistent collections | You want structural sharing (functional style) |
+
+---
+
 ## Decision Flowchart
 
 ```
@@ -111,6 +164,96 @@ What do you need?
 | Pop max | O(log n) | O(1) | O(log n) |
 | Peek max | O(1) | O(1) | O(log n) |
 | Arbitrary remove | O(n) | O(n) | O(log n) |
+
+---
+
+### Collection Performance — Beyond Big-O
+
+Big-O notation is a useful mental model, but it hides **constant factors** — and those constant factors can be enormous. Understanding what happens beneath the abstraction is what separates good Rust engineers from great ones.
+
+#### Cache Effects: The Hidden Dominator
+
+Modern CPUs access memory through a hierarchy of caches. Contiguous memory (like `Vec`) stays in cache; scattered memory (like `LinkedList`) causes constant cache misses.
+
+```
+  Memory Access Latency (approximate)
+  ┌────────────────────────────────────────────────────────┐
+  │ L1 cache hit          ~1 ns     ████                   │
+  │ L2 cache hit          ~4 ns     ████████████           │
+  │ L3 cache hit         ~12 ns     ██████████████████████ │
+  │ Main memory (RAM)    ~80 ns     ████████████████████████│
+  │                                 ████████████████████████│
+  │                                 ████████████████████████│
+  └────────────────────────────────────────────────────────┘
+```
+
+| Operation | Vec | LinkedList | Both "O(n)" but... |
+|-----------|-----|------------|---------------------|
+| Iterate 1M elements | ~0.5 ns/elem | ~15 ns/elem | LinkedList is **30× slower** |
+| Sequential sum | ~0.5 ms | ~15 ms | Same asymptotic complexity |
+| Random access | ~1 ns | ~40 ns per hop | Not even close |
+
+#### Allocation Cost
+
+`Vec::push` (amortized) is faster than `LinkedList::push_back` because `Vec` doesn't allocate per element — it doubles its capacity and reuses the buffer. Each `LinkedList` node is a separate heap allocation.
+
+```rust
+// Vec: 1 allocation grows to hold many elements
+let mut v = Vec::new();
+for i in 0..1000 {
+    v.push(i);  // ~10 reallocations total (doubling strategy)
+}
+
+// LinkedList: 1000 separate allocations!
+let mut list = LinkedList::new();
+for i in 0..1000 {
+    list.push_back(i);  // 1000 malloc calls
+}
+```
+
+#### Branch Prediction and BTreeMap
+
+`BTreeMap` stores keys in sorted arrays within each node. The CPU's branch predictor can anticipate comparison outcomes in the sorted chain, keeping the pipeline full. `HashMap`'s hash function produces essentially random access patterns that the predictor can't help with.
+
+#### The Crossover Point
+
+For **small collections** (fewer than ~50 elements), a `Vec` with linear search often **beats** `HashMap`'s hashing overhead:
+
+```
+  Lookup Time vs Collection Size
+  Time │
+       │   HashMap ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+       │  /        ╱ Vec (linear search)
+       │ /       ╱
+       │/      ╱       ← crossover (~30-50 elements)
+       │     ╱
+       │   ╱
+       │  ╱
+       │╱
+       └──────────────────────────────── Size
+          10   30   50   100  500  1000
+```
+
+This is why some languages provide `SmallMap` types that use a `Vec` internally for small sizes and switch to a hash map when the size grows.
+
+#### Benchmarking Guidance
+
+```rust
+// Use the `criterion` crate for reliable Rust benchmarks
+// In Cargo.toml:
+// [dev-dependencies]
+// criterion = { version = "0.5", features = ["html_reports"] }
+
+// Don't do this:
+let start = std::time::Instant::now();
+my_function();
+println!("Took {:?}", start.elapsed());  // ← unreliable!
+
+// Instead use criterion's statistical benchmarking
+// which accounts for warmup, outliers, and noise.
+```
+
+> **General advice:** Profile before optimizing. The collection you *think* is slow might not be the bottleneck. Use `cargo flamegraph` or `perf` to find the real hotspot, then choose the right collection for that specific path.
 
 ---
 
@@ -270,6 +413,134 @@ fn main() {
     v.swap_remove(2);  // Now: [1, 2, 5, 4]
 }
 ```
+
+---
+
+### Collection Patterns in the Rust Ecosystem
+
+Beyond choosing the right collection type, experienced Rust developers combine collections into **patterns** that solve recurring architectural problems. These patterns appear across web servers, game engines, compilers, and data pipelines.
+
+#### Pattern 1: String Interning
+
+When your program processes many duplicate strings, assign each unique string a numeric ID and work with integers instead:
+
+```rust
+use std::collections::HashMap;
+
+struct StringInterner {
+    map: HashMap<String, usize>,
+    strings: Vec<String>,
+}
+
+impl StringInterner {
+    fn intern(&mut self, s: &str) -> usize {
+        if let Some(&id) = self.map.get(s) {
+            return id;
+        }
+        let id = self.strings.len();
+        self.strings.push(s.to_owned());
+        self.map.insert(s.to_owned(), id);
+        id
+    }
+    fn resolve(&self, id: usize) -> &str { &self.strings[id] }
+}
+```
+
+> **Why?** Comparing two `usize` values is a single CPU instruction. Comparing two `String` values requires dereferencing pointers and scanning bytes. Compilers like `rustc` use this pattern extensively.
+
+#### Pattern 2: Index Map (Decoupled Storage + Lookup)
+
+Store data in a `Vec` for dense, cache-friendly iteration, and use a `HashMap` to index into it:
+
+```rust
+struct IndexMap<K: std::hash::Hash + Eq, V> {
+    data: Vec<V>,
+    index: HashMap<K, usize>,
+}
+// Insert: push to data, record index in map
+// Lookup by key: map → index → data[index]
+// Iterate: just iterate data (cache-friendly!)
+```
+
+This decouples **storage** (Vec, great for iteration) from **lookup** (HashMap, great for key access).
+
+#### Pattern 3: ECS — Entity Component System
+
+Game engines store components in parallel `Vec`s aligned by entity index:
+
+```
+  Entity IDs:       0       1       2       3
+  ┌──────────────┬───────┬───────┬───────┬───────┐
+  │ positions:   │ (0,0) │ (3,4) │ (1,2) │ (7,8) │  ← Vec<Position>
+  │ velocities:  │ (1,0) │ (0,1) │ (2,2) │ (0,0) │  ← Vec<Velocity>
+  │ healths:     │  100  │  80   │  None │  50   │  ← Vec<Option<Health>>
+  └──────────────┴───────┴───────┴───────┴───────┘
+```
+
+Each system iterates a single `Vec` — maximum cache locality. Libraries like `bevy_ecs` and `hecs` are built on this idea.
+
+#### Pattern 4: Adjacency List for Graphs
+
+```rust
+// Simple, cache-friendly graph representation
+struct Graph {
+    edges: Vec<Vec<usize>>,  // edges[node] = list of neighbors
+}
+
+impl Graph {
+    fn new(num_nodes: usize) -> Self {
+        Graph { edges: vec![vec![]; num_nodes] }
+    }
+    fn add_edge(&mut self, from: usize, to: usize) {
+        self.edges[from].push(to);
+    }
+    fn neighbors(&self, node: usize) -> &[usize] {
+        &self.edges[node]
+    }
+}
+```
+
+> Sparse graphs work well with `Vec<Vec<usize>>`. For dense graphs, consider a flat `Vec<bool>` adjacency matrix.
+
+#### Pattern 5: Two-Phase Processing
+
+Collect raw data first, then build optimized lookup structures:
+
+```rust
+// Phase 1: Collect
+let mut raw: Vec<(String, u64)> = data_source.collect();
+
+// Phase 2: Sort + dedup
+raw.sort_by(|a, b| a.0.cmp(&b.0));
+raw.dedup_by(|a, b| a.0 == b.0);
+
+// Phase 3: Build lookup structure
+let lookup: HashMap<String, u64> = raw.into_iter().collect();
+```
+
+This avoids the overhead of maintaining a sorted or hashed structure during the collection phase.
+
+#### The `collect()` Superpower
+
+Rust's `Iterator::collect()` can build **any** collection from an iterator, thanks to the `FromIterator` trait:
+
+```rust
+let input = vec![("alice", 90), ("bob", 85), ("carol", 92)];
+
+// Collect into different collection types — same data!
+let map: HashMap<&str, i32>  = input.iter().copied().collect();
+let btree: BTreeMap<&str, i32> = input.iter().copied().collect();
+let names: Vec<&str>          = input.iter().map(|(k, _)| *k).collect();
+let unique: HashSet<&str>     = input.iter().map(|(k, _)| *k).collect();
+let result: Result<HashMap<&str, i32>, _> = input
+    .iter()
+    .map(|&(k, v)| Ok((k, v)))
+    .collect();  // Collects into Result<HashMap>!
+```
+
+`FromIterator` is one of Rust's most powerful traits — implementing it for your own types makes them work seamlessly with the iterator ecosystem.
+
+> **Real-world insight:** Most performance issues with collections stem from **choosing the wrong collection** or **too many small allocations** — not from the collection's internal algorithms. Profile first, then pick the right pattern.
 
 ---
 

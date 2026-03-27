@@ -133,6 +133,78 @@ fn main() {
 
 ---
 
+### The Allocator — What Happens When Vec Needs More Memory
+
+When `Vec::push` triggers a resize, what actually happens at the system level? Understanding the allocator turns "it just works" into a mental model you can reason about.
+
+**The allocation pipeline:**
+
+```
+Vec::push()
+  │
+  ├─ len < capacity? → write element, increment len (≈5ns) ✅
+  │
+  └─ len == capacity? → must grow:
+       │
+       ├─ 1. Calculate new capacity (double / next power of 2)
+       ├─ 2. Call global allocator: alloc::alloc::alloc(new_layout)
+       │     │
+       │     ├─ Small alloc (≤4KB): thread-local cache → instant (~100ns)
+       │     ├─ Medium alloc: central free-list → fast (~200-500ns)
+       │     └─ Large alloc: OS syscall (mmap/VirtualAlloc) → slow (~1-10μs)
+       │
+       ├─ 3. memcpy old buffer → new buffer (O(n))
+       ├─ 4. Deallocate old buffer
+       └─ 5. Write new element, update ptr/len/cap
+```
+
+**Size classes and the free list:**
+
+Modern allocators (glibc `malloc`, jemalloc, mimalloc) don't manage memory as one big block. They organize free memory into **size classes** — bins of pre-divided chunks:
+
+| Size Class | Typical Bin Sizes | Source |
+|---|---|---|
+| Tiny | 8, 16, 32, 64 bytes | Thread-local cache |
+| Small | 128, 256, 512, 1024 bytes | Thread-local cache |
+| Medium | 2KB, 4KB, 8KB | Central arena |
+| Large | 16KB, 32KB, ... | mmap / VirtualAlloc |
+
+When `Vec` needs 64 bytes, the allocator grabs a pre-carved 64-byte slot from the thread-local cache — no locks, no syscalls, near-instant.
+
+**Why `Vec::with_capacity(n)` matters — real numbers:**
+
+```rust
+// Without pre-allocation: building a Vec of 1 million elements
+// Reallocations: ~20 (log₂ 1,000,000 ≈ 20)
+// Total bytes copied: ≈ 2,000,000 × size_of::<T>()
+// Total alloc calls: ~20
+// Estimated overhead: ~40μs in allocator + memcpy time
+
+// With pre-allocation:
+// Reallocations: 0
+// Total alloc calls: 1
+// Estimated overhead: ~0.5μs (one allocation)
+```
+
+That's roughly an **80× reduction** in allocation overhead for this case.
+
+**Rust's allocator story:**
+
+- **Before Rust 1.32:** jemalloc was the default allocator (great for multi-threaded workloads)
+- **Rust 1.32+:** System allocator is the default (`malloc` on Linux, `HeapAlloc` on Windows)
+- **You can switch:** Use `#[global_allocator]` to plug in jemalloc, mimalloc, or your own custom allocator
+
+```rust
+// Example: using jemalloc (add jemallocator to Cargo.toml)
+// use jemallocator::Jemalloc;
+// #[global_allocator]
+// static GLOBAL: Jemalloc = Jemalloc;
+```
+
+> **Takeaway:** A `push` that fits in existing capacity is ~5ns (a pointer write). A `push` that triggers reallocation is ~100-500ns+ (allocator call + memcpy). Pre-allocating when you know the size eliminates the expensive path entirely.
+
+---
+
 ## Growth Strategy
 
 Rust's `Vec` doubles capacity (approximately) each time it needs to grow:
@@ -166,6 +238,51 @@ Grew at len=17: cap 16 → 32
 Grew at len=33: cap 32 → 64
 Grew at len=65: cap 64 → 128
 ```
+
+---
+
+### The History of Dynamic Array Growth Strategies
+
+The doubling strategy isn't accidental — it's the result of decades of computer science research and practical engineering tradeoffs.
+
+**Why doubling (×2) dominates:**
+
+Most major implementations use a factor of 2: Rust's `Vec`, Java's `ArrayList`, C++'s `std::vector` (GCC/Clang), and Python's `list`. The reason is mathematical: with a ×2 growth factor, each element is copied at most $O(\log n)$ times across all reallocations, giving a total copy cost of $\sum_{i=0}^{\log_2 n} \frac{n}{2^i} \approx 2n$, which means **amortized O(1) per append**.
+
+**The landscape of growth factors:**
+
+| Implementation | Growth Factor | Rationale |
+|---|---|---|
+| Rust `Vec` | ×2 (next power-of-2) | Simple, fast, allocator-friendly |
+| Java `ArrayList` | ×1.5 (`old + old >> 1`) | Reduces peak memory waste |
+| C# `List<T>` | ×2 exactly | Simplicity, predictability |
+| Python `list` | ~×1.125 (over-allocates by ~12.5%) | Small objects, gradual growth |
+| Firefox SpiderMonkey | ×1.5 | Reduces wasted space vs ×2 |
+| Facebook `folly::fbvector` | ×1.5 | Allows in-place realloc more often |
+
+**Why does Facebook use 1.5×?** When you grow by exactly 2×, the new allocation is always *larger* than the sum of all previous freed blocks — so the allocator can never reuse that freed space for the new buffer. With 1.5× growth, after a few reallocations the freed blocks *add up* to enough space for the next allocation, enabling in-place extension.
+
+**The golden ratio connection:**
+
+Growth factor $\phi \approx 1.618$ (the golden ratio) is theoretically optimal for memory reuse. After two frees, the combined freed space exactly equals the next allocation size. Some custom allocators use this, but in practice the difference from 1.5× is negligible.
+
+**Rust's actual strategy in detail:**
+
+Rust's `Vec` doesn't strictly double — it requests the *next power of 2* capacity, or at minimum doubles. For the first allocation, it picks a small starting capacity (4 for types ≤ 1KB). This power-of-2 alignment is friendly to memory allocators, which typically organize free blocks in size classes that are powers of 2.
+
+```
+Growth factor tradeoff:
+
+  Larger factor (e.g., 2×)          Smaller factor (e.g., 1.25×)
+  ├─ Fewer reallocations             ├─ More reallocations
+  ├─ More wasted memory              ├─ Less wasted memory
+  └─ Simpler math                    └─ Better allocator reuse
+
+  Sweet spot for most apps: 1.5× – 2×
+  For embedded/real-time: carefully tuned per workload
+```
+
+> **Rule of thumb:** For 99% of applications, Rust's default doubling strategy is ideal. Only tune allocation strategy in embedded systems, real-time audio/video, database engines, or when profiling reveals allocation as a bottleneck.
 
 ---
 
@@ -262,6 +379,94 @@ fn main() {
     // No heap allocation at all!
 }
 ```
+
+---
+
+### Zero-Sized Types — A Rust Superpower
+
+ZSTs are one of Rust's most elegant emergent properties — types that exist at compile time but occupy **zero bytes** at runtime.
+
+**What qualifies as a ZST?**
+
+```rust
+use std::mem::size_of;
+
+struct Marker;              // size = 0
+struct Empty {}             // size = 0
+enum Void {}                // size = 0 (uninhabited)
+
+assert_eq!(size_of::<()>(), 0);
+assert_eq!(size_of::<Marker>(), 0);
+assert_eq!(size_of::<std::marker::PhantomData<String>>(), 0);
+```
+
+**How Vec handles ZSTs — no special cases needed:**
+
+```
+Vec<i32> with 3 elements:           Vec<()> with 1,000,000 elements:
+┌──────────────┐                   ┌──────────────────────────┐
+│ ptr → [heap] │                   │ ptr → NonNull::dangling() │  ← special
+│ len: 3       │                   │ len: 1_000_000            │     sentinel,
+│ cap: 4       │                   │ cap: usize::MAX           │     NOT a real
+└──────────────┘                   └──────────────────────────┘     heap pointer
+  Heap: 16 bytes allocated           Heap: 0 bytes allocated!
+```
+
+Rust uses `NonNull::dangling()` — a well-aligned, non-null pointer that is never dereferenced — as the buffer pointer for ZST vectors. Since each element is 0 bytes, the capacity is effectively infinite (`usize::MAX`).
+
+**Why this matters in the real world:**
+
+The standard library exploits ZSTs extensively:
+
+| Type | Implementation | ZST Usage |
+|---|---|---|
+| `HashSet<T>` | `HashMap<T, ()>` | Values are `()` → zero space for values |
+| `BTreeSet<T>` | `BTreeMap<T, ()>` | Same trick |
+| `LinkedList` internal | Node markers | Sentinel nodes with no data |
+
+```rust
+// HashSet<String> is secretly HashMap<String, ()>
+// The () values take ZERO additional space per entry!
+use std::collections::HashSet;
+let mut set = HashSet::new();
+set.insert("hello".to_string());  // Only stores the key, no value overhead
+```
+
+**The typestate pattern — compile-time state machines at zero cost:**
+
+```rust
+use std::marker::PhantomData;
+
+struct Locked;
+struct Unlocked;
+
+struct Door<State> {
+    _state: PhantomData<State>,  // 0 bytes!
+}
+
+impl Door<Locked> {
+    fn unlock(self) -> Door<Unlocked> { Door { _state: PhantomData } }
+}
+impl Door<Unlocked> {
+    fn lock(self) -> Door<Locked> { Door { _state: PhantomData } }
+    fn open(&self) { println!("Door opened!"); }
+}
+// door.open() only compiles if door is Door<Unlocked> — checked at compile time!
+```
+
+**Comparison with other languages:**
+
+| Language | Minimum Object Size | Notes |
+|---|---|---|
+| **Rust** | **0 bytes** (ZSTs) | Monomorphization specializes code per type |
+| C++ | 1 byte minimum | Empty base optimization can help |
+| Java | 16 bytes | Object header (mark word + class pointer) |
+| Python | ~56 bytes | `object()` overhead |
+| Go | 0 bytes for `struct{}` | Similar to Rust, but no generics specialization |
+
+Rust's monomorphization means `Vec<()>` gets its own specialized machine code that **skips allocation entirely** — the compiler doesn't just store zero bytes, it removes the allocation logic from the generated code.
+
+> **Key insight:** ZSTs aren't a hack or special case — they fall out naturally from Rust's type system and monomorphization. When `size_of::<T>() == 0`, all the math (capacity × 0 = 0 bytes needed) just works.
 
 ---
 

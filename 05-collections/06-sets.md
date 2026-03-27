@@ -47,6 +47,61 @@ fn main() {
 
 ---
 
+### Set Theory — The Mathematical Foundation
+
+Before diving deeper into Rust's API, it's worth understanding **where sets come from** — because the operations you'll use in code map directly to mathematical notation invented over 150 years ago.
+
+**Georg Cantor (1874)** defined a set as *"a collection of definite, distinct objects of our perception or thought."* This deceptively simple idea became the **foundation of all modern mathematics**. Every branch — algebra, topology, analysis, logic — is built on set theory. When you use a `HashSet` in Rust, you're wielding one of math's most powerful abstractions.
+
+The fundamental property: **NO DUPLICATES.** Every element in a set is unique. Insert the same value twice, and the set doesn't change. This single constraint enables everything below.
+
+**The Four Core Operations (with Venn Diagrams):**
+
+```
+  Union (A ∪ B)           Intersection (A ∩ B)      Difference (A \ B)
+ ┌─────────────────┐     ┌─────────────────┐      ┌─────────────────┐
+ │  ┌──A───┐       │     │  ┌──A───┐       │      │  ┌──A───┐       │
+ │  │██████│██B──┐ │     │  │      │██B──┐ │      │  │██████│  B──┐ │
+ │  │██████│█████│ │     │  │      │█████│ │      │  │██████│     │ │
+ │  │██████│█████│ │     │  │      │█████│ │      │  │██████│     │ │
+ │  └──────│█████│ │     │  └──────│     │ │      │  └──────│     │ │
+ │         └─────┘ │     │         └─────┘ │      │         └─────┘ │
+ └─────────────────┘     └─────────────────┘      └─────────────────┘
+  Everything in           Only the overlap          In A, but NOT in B
+  either A or B
+
+  Symmetric Difference (A △ B)
+ ┌─────────────────┐
+ │  ┌──A───┐       │
+ │  │██████│  B──┐ │
+ │  │██████│     │ │
+ │  │██████│█████│ │
+ │  └──────│█████│ │
+ │         └─────┘ │
+ └─────────────────┘
+  In one, but NOT both
+```
+
+**How This Maps to Programming:**
+
+| Math Concept | Programming Use Case | Example |
+|---|---|---|
+| A ∪ B (union) | Combine tag lists, merge results | All skills from two job postings |
+| A ∩ B (intersection) | Find commonalities | Mutual friends between two users |
+| A \ B (difference) | Find what's missing | Files in repo but not in backup |
+| A △ B (symmetric diff) | Find mismatches | Config drift between two servers |
+| x ∈ A (membership) | Existence checks | Is this user ID in the banned set? |
+| \|A\| (cardinality) | Count unique items | Unique visitors to a website |
+
+The no-duplicates guarantee makes sets the **go-to data structure** for:
+- **Deduplication** — pour data in, duplicates vanish
+- **O(1) membership testing** — "have I seen this before?" in constant time
+- **Finding commonalities** — intersection of two datasets in linear time
+
+Every set operation you'll see in Rust — `.union()`, `.intersection()`, `.difference()`, `.symmetric_difference()` — is a direct implementation of Cantor's original ideas. The math is the API.
+
+---
+
 ## BTreeSet Basics
 
 Same API, but sorted:
@@ -188,6 +243,54 @@ fn main() {
 
 ---
 
+### Sets Across Programming Languages
+
+Rust's `HashSet` and `BTreeSet` don't exist in a vacuum. Every major language has a set abstraction, but the design trade-offs differ in revealing ways:
+
+| Language | Hash Set | Sorted Set | Literal Syntax | Operator Support | Lazy Operations? |
+|---|---|---|---|---|---|
+| **Rust** | `HashSet<T>` | `BTreeSet<T>` | No | `\|`, `&`, `-`, `^` (on refs) | Yes (iterators) |
+| **Python** | `set` / `frozenset` | — (use `sorted()`) | `{1, 2, 3}` | `\|`, `&`, `-`, `^` | No (returns new set) |
+| **Java** | `HashSet<T>` | `TreeSet<T>` | No | No | No |
+| **C++** | `unordered_set<T>` | `set<T>` (Red-Black tree) | No (C++11 init list) | No | No |
+| **JavaScript** | `Set` (ES6) | — | No | `union()`, `intersection()` (2024) | No |
+| **Go** | — (use `map[T]struct{}`) | — | No | No | No |
+
+**Notable differences:**
+
+**Python** has the best set ergonomics of any language. Literal syntax (`{1, 2, 3}`), full operator support (`a | b`, `a & b`, `a - b`, `a ^ b`), and `frozenset` for immutable/hashable sets. The gold standard for readability:
+
+```python
+mutual = alice_friends & bob_friends   # intersection
+all_tags = post1_tags | post2_tags      # union
+```
+
+**Go** has no built-in set type at all. The idiomatic workaround is `map[T]struct{}` — using an empty struct as the value to consume zero extra bytes. This is conceptually identical to Rust's trick where `HashSet<T>` is backed by `HashMap<T, ()>`.
+
+```go
+seen := map[string]struct{}{}
+seen["apple"] = struct{}{}     // insert
+_, ok := seen["apple"]         // membership test
+```
+
+**JavaScript's** `Set` (ES6, 2015) had no set algebra methods for nearly a decade. You had to write manual loops for union/intersection. The 2024 TC39 proposal finally added `.union()`, `.intersection()`, `.difference()`, and `.symmetricDifference()` — nine years after `Set` was introduced.
+
+**Rust's unique advantage — laziness.** When you call `.union(&b)` in Rust, it returns an **iterator**, not a new set. Nothing is computed until you consume it. This means you can chain operations without allocating intermediate collections:
+
+```rust
+// Lazy: no allocation until .collect()
+let result: HashSet<_> = a.union(&b)
+    .filter(|&&x| x > 0)
+    .copied()
+    .collect();
+```
+
+Python's equivalent (`a | b`) allocates a brand new set immediately. For large sets or chained operations, Rust's lazy approach can save significant memory and time.
+
+**The operator syntax** in Rust requires references (`&a | &b`), which returns an owned `HashSet`. The method syntax (`.union(&b)`) returns an iterator of references. Both are valid — operators for convenience, methods for lazy composition.
+
+---
+
 ## Subset and Superset
 
 ```rust
@@ -301,6 +404,85 @@ fn main() {
 | Min/Max | No (O(n)) | Yes (O(log n)) |
 | Element requirement | `Hash + Eq` | `Ord` |
 | Use when | Fast membership test | Need ordering |
+
+---
+
+### When Sets Shine — Real-World Use Cases
+
+Knowing the API is one thing. Knowing **when to reach for a set** is the skill that separates experienced Rustaceans from beginners.
+
+**1. Instant Deduplication**
+
+```rust
+let data = vec![3, 1, 4, 1, 5, 9, 2, 6, 5, 3];
+let unique: HashSet<i32> = data.into_iter().collect();
+// Done. All duplicates gone.
+```
+
+⚠️ **But this loses insertion order!** If you need uniqueness + original order, the `indexmap` crate provides `IndexSet`:
+
+```rust
+use indexmap::IndexSet;
+let ordered_unique: IndexSet<i32> = vec![3, 1, 4, 1, 5].into_iter().collect();
+// [3, 1, 4, 5] — unique AND in original order
+```
+
+**2. The "Seen Set" Pattern**
+
+The most common set pattern in real code — tracking what you've already processed:
+
+```rust
+let mut seen = HashSet::new();
+for item in stream_of_events {
+    if seen.insert(item.id) {   // returns true if NEW
+        process(item);           // only process each ID once
+    }
+}
+```
+
+This appears everywhere: crawlers (visited URLs), event processing (dedup by ID), graph traversal (visited nodes in BFS/DFS).
+
+**3. Membership Testing in Hot Loops**
+
+```
+Performance comparison — "Is x in the collection?"
+┌────────────────┬────────────┬───────────────┐
+│ Collection     │ 10 items   │ 1,000 items   │
+├────────────────┼────────────┼───────────────┤
+│ Vec::contains  │ ~10 ns     │ ~1,000 ns     │
+│ HashSet::contains │ ~10 ns │ ~10 ns        │
+└────────────────┴────────────┴───────────────┘
+```
+
+`Vec::contains()` is O(n) — it scans every element. `HashSet::contains()` is O(1). For 1,000 elements, that's roughly **100× faster**. If you're checking membership inside a loop, convert to a `HashSet` first.
+
+**4. Permission & Access Control**
+
+```rust
+let user_perms: HashSet<&str> = ["read", "write", "delete"].into();
+let required: HashSet<&str> = ["read", "write"].into();
+
+if required.is_subset(&user_perms) {
+    println!("Access granted");
+}
+```
+
+This pattern is used in authorization systems, feature flags, and capability-based security.
+
+**5. Compiler / Linter Internals**
+
+Compilers use sets extensively: tracking defined variables, checking for unused imports, detecting duplicate definitions, computing live variable sets for optimization passes.
+
+**When NOT to Use a Set:**
+
+| Need | Don't Use | Use Instead |
+|---|---|---|
+| Uniqueness + sorted order | `HashSet` | `BTreeSet` |
+| Uniqueness + insertion order | `HashSet` | `IndexSet` (indexmap crate) |
+| Tiny collection (< 10 items) | `HashSet` | `Vec` + `.contains()` |
+| Counting occurrences | `HashSet` | `HashMap<T, usize>` |
+
+**Memory overhead:** `HashSet` carries ~88 bytes of base overhead plus per-entry costs (key + hash + metadata). For very small collections (under ~10 elements), a plain `Vec` with `.contains()` can actually be **faster** due to CPU cache locality — the entire `Vec` fits in a cache line, while `HashSet` entries are scattered across memory. Profile before optimizing, but be aware of the crossover point.
 
 ---
 

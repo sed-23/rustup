@@ -99,6 +99,75 @@ fn main() {
 
 ---
 
+### The History of Text Encoding — From Telegraph to UTF-8
+
+UTF-8 didn't appear out of nowhere. It's the survivor of a 150-year evolution in how
+humans encode text into machines. Understanding this history explains *why* Rust made
+UTF-8 its default and why so many other encodings still haunt us.
+
+**The timeline:**
+
+- **Baudot code (1870)** — The first practical character encoding, designed for telegraphs.
+  Only 5 bits → 32 possible characters. Letters were uppercase only, and you toggled a
+  "shift" to access numbers. Used well into the 1960s on telex machines.
+
+- **ASCII (1963)** — 7-bit encoding → 128 characters. Covered uppercase, lowercase, digits,
+  punctuation, and 33 control codes (like newline and bell). Designed for American English.
+  Became *the* standard for decades — every encoding that came after had to deal with ASCII
+  compatibility.
+
+- **The chaos of the 1980s** — Every region on Earth invented their own extension of ASCII:
+  - **Latin-1 (ISO 8859-1)** — Western European: é, ñ, ü
+  - **Shift-JIS** — Japanese: mixed single/double-byte encoding
+  - **GB2312** — Simplified Chinese
+  - **KOI8-R** — Russian Cyrillic
+  - **Windows-1252** — Microsoft's "Latin-1 but different"
+
+  None of these were compatible with each other.
+
+- **"Mojibake" (文字化け)** — Japanese term for garbled text that appears when you open a
+  file with the wrong encoding. Example: "café" in Latin-1 opened as UTF-8 → "cafÃ©".
+  This *still* happens today in email attachments, CSV exports, and legacy databases.
+
+- **Unicode (1991)** — The Unicode Consortium set out to create ONE encoding for ALL writing
+  systems. Version 1.0 had ~7,000 characters. Today (Unicode 15.1): **149,813 characters**
+  covering 161 scripts, including Egyptian hieroglyphs and emoji.
+
+- **UTF-16 (1996)** — Early Unicode bet that 65,536 code points would be enough, so they
+  used fixed 2-byte units. They were wrong. To handle code points above U+FFFF, they added
+  "surrogate pairs" — a messy hack where one character takes 4 bytes. Java and JavaScript
+  strings are UTF-16, which is why `"😀".length === 2` in JavaScript.
+
+- **UTF-8 (1992)** — Ken Thompson and Rob Pike designed it *on a placemat at a diner* in
+  New Jersey. The key insight: use variable-length encoding (1-4 bytes) where ASCII
+  characters stay exactly the same — one byte, same value. This meant every existing ASCII
+  file was already valid UTF-8.
+
+**Why UTF-8 won:**
+
+```
+✅ Backward-compatible with ASCII (every ASCII file is valid UTF-8)
+✅ No byte-order issues (no BOM needed, unlike UTF-16)
+✅ Self-synchronizing (you can jump into the middle and find char boundaries)
+✅ Space-efficient for Latin text (1 byte/char vs UTF-16's 2 bytes/char)
+✅ No surrogate pair hacks
+```
+
+| Encoding   | Year | Bytes/Char  | Max Characters | Still Used?              |
+|------------|------|-------------|----------------|--------------------------|
+| Baudot     | 1870 | 0.625 (5-bit)| 32            | No (museums only)        |
+| ASCII      | 1963 | 1           | 128            | Yes (subset of UTF-8)    |
+| Latin-1    | 1985 | 1           | 256            | Legacy databases, HTTP   |
+| Shift-JIS  | 1982 | 1-2         | ~7,000         | Legacy Japanese software |
+| UTF-16     | 1996 | 2-4         | 1,112,064      | Java, JavaScript, Win32  |
+| UTF-8      | 1992 | 1-4         | 1,112,064      | **98%+ of all websites** |
+
+Today, UTF-8 is the default encoding for Rust, Go, Python 3, and most modern tools.
+Rust's decision to make `String` always UTF-8 is not arbitrary — it's following the
+clear winner of 150 years of encoding history.
+
+---
+
 ## Bytes, Chars, and Graphemes
 
 A "character" on screen can be multiple Unicode code points:
@@ -128,6 +197,83 @@ fn main() {
     
     // As grapheme clusters (what humans see) — requires `unicode-segmentation` crate
     // "न", "म", "स्", "ते" — 4 graphemes
+}
+```
+
+---
+
+### Bytes, Chars, and Graphemes — The Unicode Iceberg
+
+The three "levels" of looking at a string are like an iceberg — what you see on screen
+(graphemes) hides enormous complexity underneath (chars and bytes).
+
+```
+    What you see:     "é"        (1 grapheme cluster)
+                       │
+    ┌──────────────────┼──────────────────┐
+    │                  │                  │
+    Level 1:       "é" (U+00E9)      OR  "e" + "◌́" (U+0065 + U+0301)
+    (chars)         1 scalar              2 scalars
+    │                  │                  │
+    Level 2:       [0xC3, 0xA9]      OR  [0x65, 0xCC, 0x81]
+    (bytes)          2 bytes               3 bytes
+```
+
+**Canonical equivalence:** The precomposed `é` (U+00E9) and the decomposed `e` + combining
+acute accent (U+0065 + U+0301) look *identical* on screen but have completely different
+byte sequences. If you compare them byte-by-byte, they won't match!
+
+**Unicode normalization** solves this:
+- **NFC** (Canonical Decomposition, then Canonical Composition) — "compose" into fewest
+  code points: `e + ◌́ → é`
+- **NFD** (Canonical Decomposition) — "decompose" into base + combining marks: `é → e + ◌́`
+
+You **must** normalize strings before comparing or hashing them if they come from
+different sources. Rust's standard library doesn't include normalization — use the
+`unicode-normalization` crate.
+
+**Grapheme clusters — what a human sees as "a character":**
+
+```
+Example              Code Points               Scalars  Bytes  Graphemes
+─────────────────────────────────────────────────────────────────────────
+"e"                  U+0065                        1      1       1
+"é"                  U+00E9                        1      2       1
+"é"                  U+0065 U+0301                 2      3       1
+"🇺🇸"                 U+1F1FA U+1F1F8               2      8       1
+"👨‍👩‍👧‍👦"              U+1F468 U+200D U+1F469        7     25       1
+                     U+200D U+1F467 U+200D
+                     U+1F466
+"நி"                  U+0BA8 U+0BBF                 2      6       1
+```
+
+**The flag emoji deep-dive:** 🇺🇸 is not a single Unicode code point. It's TWO "Regional
+Indicator" symbols: 🇺 (U+1F1FA) + 🇸 (U+1F1F8). The rendering engine sees two regional
+indicators and combines them into a flag. Rust's `char` type can hold each indicator
+separately, but there is no single `char` for "the US flag."
+
+**The family emoji deep-dive:** 👨‍👩‍👧‍👦 is SEVEN Unicode scalars joined by Zero-Width Joiners:
+`👨 + ZWJ + 👩 + ZWJ + 👧 + ZWJ + 👦`. That's 25 bytes of UTF-8 for one visible glyph.
+
+**Why Rust's `char` is NOT a "character":**
+A Rust `char` is a Unicode Scalar Value — a 21-bit code point (stored in 4 bytes for
+alignment). It can represent individual scalars like `'a'` or `'🇺'`, but it fundamentally
+*cannot* represent a grapheme cluster like 🇺🇸 or 👨‍👩‍👧‍👦 as a single value.
+
+**Why isn't grapheme segmentation in `std`?**
+Grapheme cluster rules are defined by Unicode Annex #29 and change with *every Unicode
+version*. Baking this into `std` would tie Rust's release cycle to Unicode's. Instead,
+the ecosystem crate `unicode-segmentation` handles this:
+
+```rust
+// In Cargo.toml: unicode-segmentation = "1.10"
+use unicode_segmentation::UnicodeSegmentation;
+
+fn main() {
+    let family = "👨\u{200D}👩\u{200D}👧\u{200D}👦";
+    let graphemes: Vec<&str> = family.graphemes(true).collect();
+    println!("{:?}", graphemes);  // ["👨\u{200d}👩\u{200d}👧\u{200d}👦"]
+    println!("grapheme count: {}", graphemes.len());  // 1
 }
 ```
 
@@ -370,6 +516,119 @@ fn main() {
     }
 }
 ```
+
+---
+
+### String Performance — Allocation Patterns and Optimization
+
+Under the hood, `String` is a `Vec<u8>` with a UTF-8 invariant. This means *all*
+`Vec` optimization advice applies directly to `String`.
+
+**Pre-allocate with `String::with_capacity(n)`:**
+
+```rust
+// BAD: multiple reallocations as the string grows
+let mut s = String::new();
+for word in &words {
+    s.push_str(word);  // May reallocate on each push
+}
+
+// GOOD: one allocation up front
+let total_len: usize = words.iter().map(|w| w.len()).sum();
+let mut s = String::with_capacity(total_len);
+for word in &words {
+    s.push_str(word);  // No reallocations
+}
+```
+
+**The `+` operator trap — O(n²) in a loop:**
+
+Each `+` creates a new `String` allocation. In a loop of n iterations, this means
+n allocations and O(n²) total bytes copied:
+
+```rust
+// ❌ O(n²) — each + allocates a NEW String
+let mut result = String::new();
+for item in &items {
+    result = result + item;  // Moves old result, allocates new
+}
+
+// ✅ O(n) — push_str appends in place
+let mut result = String::with_capacity(estimated_size);
+for item in &items {
+    result.push_str(item);  // Appends to existing buffer
+}
+```
+
+**`format!()` vs `write!()` — allocation control:**
+
+```rust
+use std::fmt::Write;
+
+// format! always allocates a NEW String
+let s = format!("Hello, {}!", name);  // New allocation
+
+// write! appends to an EXISTING String — no new allocation
+let mut s = String::with_capacity(256);
+write!(s, "Hello, {}!", name).unwrap();   // Writes into s
+write!(s, " You have {} items.", count).unwrap();  // Still the same buffer
+```
+
+**Real-world example — building a URL with query parameters:**
+
+```rust
+fn build_url(base: &str, params: &[(&str, &str)]) -> String {
+    // Estimate: base + "?" + params as "key=value&" (~20 bytes each)
+    let mut url = String::with_capacity(base.len() + params.len() * 20);
+    url.push_str(base);
+    for (i, (key, value)) in params.iter().enumerate() {
+        url.push(if i == 0 { '?' } else { '&' });
+        url.push_str(key);
+        url.push('=');
+        url.push_str(value);
+    }
+    url  // One allocation, no reallocations for typical URLs
+}
+```
+
+**The `collect` trick — efficient because of `size_hint`:**
+
+```rust
+let s: String = some_chars.collect();  // Efficient!
+// Rust calls size_hint() on the iterator to pre-allocate the right capacity.
+// For example, chars from a &str know their byte length upper bound.
+```
+
+**`Cow<str>` — borrow when you can, allocate when you must:**
+
+```rust
+use std::borrow::Cow;
+
+fn clean_input(input: &str) -> Cow<str> {
+    if input.contains('\t') {
+        Cow::Owned(input.replace('\t', "    "))  // Must allocate
+    } else {
+        Cow::Borrowed(input)  // Zero-cost: just returns the reference
+    }
+}
+// In practice, most inputs won't have tabs → most calls are free.
+```
+
+**When `String` is overkill — cheaper alternatives for immutable text:**
+
+```
+Type        Stack Size   Heap         Growable   When to Use
+─────────── ────────── ──────────── ────────── ──────────────────────────────
+&str          16 B     No (borrow)    No       Function params, temp views
+String        24 B     Yes (owned)    Yes      Building/modifying text  
+Box<str>      16 B     Yes (owned)    No       Owned immutable text (saves 8B)
+Arc<str>      16 B     Yes (shared)   No       Shared across threads
+Cow<str>      24 B     Maybe          No       Sometimes modify, usually don't
+```
+
+If you never modify a string after creation, `Box<str>` saves 8 bytes on the stack
+(no `capacity` field) and the exact heap size (no excess capacity). For shared
+immutable strings across threads, `Arc<str>` avoids cloning entirely.
 
 ---
 

@@ -142,6 +142,73 @@ fn main() {
 }
 ```
 
+### Ring Buffers — The Data Structure Behind VecDeque
+
+`VecDeque` is implemented as a **ring buffer** (also called a circular buffer) — a classic data structure dating back to the 1960s. Understanding how it works under the hood explains *why* it's O(1) at both ends.
+
+#### How a Ring Buffer Works
+
+A ring buffer is a fixed-size array with two pointers — **head** and **tail** — that *wrap around* when they reach the end:
+
+- **`push_back`**: advances the tail pointer forward. If it reaches the end of the array, it wraps to index 0.
+- **`push_front`**: moves the head pointer backward. If it goes below 0, it wraps to the last index.
+- **`pop_front`**: advances head forward. **`pop_back`**: moves tail backward.
+
+Because no elements ever shift, every operation is **O(1)**.
+
+```
+  Ring Buffer (capacity 8):
+
+  Physical array:  [ _, _, C, D, E, A, B, _ ]
+                     0  1  2  3  4  5  6  7
+                              tail↑  head↑
+
+  Logical view (reading head → tail, wrapping):
+
+       head
+        ↓
+  ┌───┬───┬───┬───┬───┐
+  │ A │ B │ C │ D │ E │    ← contiguous logical sequence
+  └───┴───┴───┴───┴───┘
+        wraps around ↻
+
+  push_front('Z'):  head moves 5→4
+  [ _, _, C, D, E, Z, A, B ]   ← no shifting!
+                    ↑ new head
+
+  push_back('F'):   tail moves 2→? (grows if needed)
+```
+
+Contrast this with `Vec`, which must shift *every element* forward when you insert at the front — O(n) work.
+
+#### Ring Buffers in the Real World
+
+Ring buffers are everywhere in systems programming:
+
+| Domain | Use Case | Why Ring Buffers? |
+|--------|----------|-------------------|
+| **Linux kernel** | Network packet buffers (`sk_buff` rings) | Fixed-size, no allocation in hot path |
+| **Audio processing** | Sample buffers between capture and playback | Producer-consumer with bounded latency |
+| **Keyboard/serial I/O** | Input event buffers | Hardware writes, software reads at different rates |
+| **Game engines** | Command queues, replay buffers | Bounded history with automatic overwrite |
+| **Logging** | Circular log buffers | Keep last N entries without growing |
+
+The **producer-consumer pattern** is the classic use case: one side writes data, the other side reads it. A ring buffer lets both sides operate independently at O(1) cost, with no allocation. In real-time systems (audio, video, embedded), this is critical — you pre-allocate the buffer once and never touch the allocator again.
+
+#### VecDeque vs Vec — When to Choose Which
+
+```
+  Vec:      ▓▓▓▓▓▓▓▓░░░░       ← elements packed at front, push/pop at back
+            fast →→→ back        slow ←←← front (shifts everything)
+
+  VecDeque: ░░▓▓▓▓▓▓░░░░       ← elements can start anywhere in the buffer
+            fast ←← front       fast →→→ back (both O(1))
+```
+
+- **Use `Vec`** when you only add/remove from the back (stack pattern, most common).
+- **Use `VecDeque`** when you need FIFO (queue) behavior, or fast operations at *both* ends.
+- `Vec` has slightly less overhead (one pointer instead of two), so default to `Vec` unless you need front operations.
+
 ---
 
 ## BinaryHeap — Priority Queue
@@ -278,6 +345,89 @@ fn main() {
 }
 ```
 
+### Binary Heaps and Priority Queues — From Theory to Practice
+
+Binary heaps were invented by **J.W.J. Williams in 1964** as part of the heapsort algorithm — one of the most elegant data structures in computer science. Understanding the theory unlocks a powerful problem-solving tool.
+
+#### The Heap Property
+
+A binary heap is a *complete binary tree* stored in an array, satisfying one rule:
+
+- **Max-heap**: every parent is **≥** its children (Rust's `BinaryHeap`)
+- **Min-heap**: every parent is **≤** its children
+
+```
+  Max-Heap (Rust's BinaryHeap):       Min-Heap (BinaryHeap<Reverse<T>>):
+
+          50                                    1
+         /  \                                  / \
+       30    40                               5    3
+      / \   / \                             / \  / \
+    10  20 15  35                          10  8 7   6
+```
+
+Rust's `BinaryHeap` is a **max-heap** — `pop()` always returns the largest element. For a min-heap, wrap your values in `std::cmp::Reverse`:
+
+```rust
+use std::collections::BinaryHeap;
+use std::cmp::Reverse;
+
+let mut min_heap = BinaryHeap::new();
+min_heap.push(Reverse(5));
+min_heap.push(Reverse(1));
+min_heap.push(Reverse(3));
+assert_eq!(min_heap.pop(), Some(Reverse(1)));  // smallest first!
+```
+
+#### The Array Trick — No Pointers Needed
+
+The key insight: a complete binary tree maps perfectly onto a flat array. For element at index `i`:
+
+```
+  Parent:      (i - 1) / 2
+  Left child:  2 * i + 1
+  Right child: 2 * i + 2
+
+  Array:  [50, 30, 40, 10, 20, 15, 35]
+  Index:    0   1   2   3   4   5   6
+
+  Tree:         50 (0)
+               /      \
+          30 (1)      40 (2)
+          /   \       /   \
+      10 (3) 20 (4) 15 (5) 35 (6)
+
+  Index 2's children: 2*2+1=5, 2*2+2=6  → 15, 35  ✓
+  Index 4's parent:   (4-1)/2=1          → 30      ✓
+```
+
+No pointers, no allocations per node — just a contiguous `Vec` internally. This makes heaps **cache-friendly** and very fast in practice.
+
+#### Heaps Across Languages
+
+| Language | Type | Max or Min? | Backing Storage | Default Behavior |
+|----------|------|-------------|-----------------|------------------|
+| **Rust** | `BinaryHeap<T>` | Max | `Vec<T>` | Largest first |
+| **Java** | `PriorityQueue<T>` | Min | Array | Smallest first |
+| **Python** | `heapq` | Min | List | Smallest first |
+| **C++** | `priority_queue<T>` | Max | `vector<T>` | Largest first |
+| **Go** | `container/heap` | Min (by convention) | Slice | User-defined |
+
+Notice: most languages default to min-heap. Rust and C++ are the exceptions with max-heap.
+
+#### Real-World Applications
+
+- **Dijkstra's shortest path**: process the closest unvisited node first → min-heap of (distance, node)
+- **A\* pathfinding**: game AI, GPS navigation — priority queue ordered by estimated total cost
+- **Job/task schedulers**: OS process scheduling, print queues — highest priority job executes first
+- **K-largest / K-smallest problems**: maintain a heap of size K → O(n log k) total, much better than sorting O(n log n) when k ≪ n
+- **Median-finding**: two heaps (max-heap for lower half, min-heap for upper half) → O(log n) per insertion, O(1) median query
+- **Event-driven simulation**: events with timestamps enter a priority queue, always processing the earliest event next — used in network simulators, physics engines, and discrete-event systems
+
+#### The Heap Guarantee
+
+One subtlety: a `BinaryHeap` is **not fully sorted**. Only the top element is guaranteed to be the max. The internal order of other elements is arbitrary (they satisfy the heap property, but sibling order is undefined). If you need a fully sorted iteration, use `.into_sorted_vec()` — or just pop repeatedly.
+
 ---
 
 ## LinkedList
@@ -314,6 +464,80 @@ fn main() {
 - Every node has 2 extra pointers (16 bytes overhead on 64-bit)
 - `Vec` and `VecDeque` are faster for almost everything
 - Only advantage: O(1) split/append if you have a cursor
+
+### LinkedList — Why You (Almost) Never Need It
+
+Linked lists hold a special place in CS history. They were among the **first data structures ever invented** (1955–56, by Allen Newell, Cliff Shaw, and Herbert Simon at RAND Corporation, for their Logic Theory Machine). Every CS curriculum teaches them extensively.
+
+But in modern practice, they are rarely the right choice. Here's why.
+
+#### The Cache Locality Problem
+
+Every node in a linked list is a **separate heap allocation**. Nodes end up scattered across memory:
+
+```
+  Vec (contiguous):
+  ┌───┬───┬───┬───┬───┐
+  │ 1 │ 2 │ 3 │ 4 │ 5 │   ← all in one cache line, prefetcher loves this
+  └───┴───┴───┴───┴───┘
+
+  LinkedList (scattered):
+  ┌───┐    ┌───┐    ┌───┐    ┌───┐    ┌───┐
+  │ 1 │───→│ 2 │───→│ 3 │───→│ 4 │───→│ 5 │
+  └───┘    └───┘    └───┘    └───┘    └───┘
+  0x1A00   0x4F20   0x0830   0xBB10   0x72C0
+     ↑ scattered across memory — cache miss on every node!
+```
+
+Modern CPUs are incredibly fast at sequential memory access (prefetching, cache lines of 64 bytes). Walking a `Vec` is essentially free after the first access. Walking a linked list triggers a **cache miss on nearly every node** — 50–100x slower per access.
+
+#### Bjarne Stroustrup's Famous Benchmark
+
+**Bjarne Stroustrup**, creator of C++, demonstrated something counterintuitive: inserting into the **middle** of a `Vec` (which requires shifting all subsequent elements) is *faster* than inserting into a linked list — even though the linked list insertion is "O(1)" once you have the position.
+
+The reason: shifting elements in a contiguous array is a single `memcpy` — CPUs do this at memory bandwidth speed. Finding the insertion point in a linked list requires chasing pointers through scattered memory. The crossover point where linked lists actually win is around **500,000+ elements**, and only if you already have a pointer/cursor to the insertion point.
+
+#### Memory Overhead
+
+Rust's `LinkedList` is doubly-linked. Each node stores:
+
+```
+  Node<T>:
+  ┌──────────┬──────────┬──────────┐
+  │  *prev   │  value   │  *next   │
+  │ (8 bytes)│ (T size) │ (8 bytes)│
+  └──────────┴──────────┴──────────┘
+     + allocator overhead (~16 bytes per allocation)
+
+  For a LinkedList<i32>:  4 bytes of data + ~32 bytes of overhead = 8x waste!
+  For a Vec<i32>:         4 bytes of data + ~0 bytes overhead per element
+```
+
+#### When LinkedList IS Useful
+
+There are legitimate (rare) use cases:
+
+- **O(1) split and append**: splitting a linked list at a cursor position or appending two lists is O(1) — `Vec` requires O(n) copies
+- **Intrusive linked lists in kernel/OS code**: nodes embedded in larger structures, no separate allocation
+- **Cursor-based editing** (unstable API): if you need to insert/remove at arbitrary positions while iterating, the cursor API provides true O(1) operations
+
+```rust
+// The unstable cursor API — the ONLY time LinkedList wins
+// #![feature(linked_list_cursors)]
+// let mut cursor = list.cursor_front_mut();
+// cursor.move_next();     // O(1)
+// cursor.insert_after(x); // O(1) — true constant time!
+```
+
+#### The Broader Lesson: Big-O Isn't Everything
+
+This is one of the most important performance lessons in systems programming:
+
+> **Theoretical complexity (Big-O) doesn't account for cache behavior. Real performance is about data layout.**
+
+- O(n) operation on contiguous memory (Vec) often beats O(1) operation on scattered memory (LinkedList)
+- The Rust community consensus: *"If you're reaching for `LinkedList`, reconsider. `VecDeque` or `Vec` is almost always faster."*
+- Default to `Vec`. If you need front+back operations, use `VecDeque`. Only reach for `LinkedList` if you have a proven, measured need for cursor-based O(1) splicing.
 
 ---
 
