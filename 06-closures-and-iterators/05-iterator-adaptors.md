@@ -123,6 +123,47 @@ fn main() {
 
 ---
 
+### Iterator Adaptors in Other Languages — A Comparison
+
+The `map`/`filter`/`flat_map` pattern isn't unique to Rust — it exists in nearly every modern language. What *is* unique is **how** Rust implements it. Understanding the differences helps you appreciate Rust's zero-cost abstraction story.
+
+#### The Same Concepts, Different Trade-offs
+
+**Python** uses built-in `map()` and `filter()` functions, but idiomatic Python prefers **list comprehensions** (`[x*2 for x in lst]`) and **generator expressions** (`(x*2 for x in lst)`). Generators are lazy like Rust iterators, but they rely on Python's runtime and cannot be optimized at compile time.
+
+**JavaScript** provides `.map()`, `.filter()`, and `.flatMap()` as **array methods**. These are always **eager** — each call allocates a brand-new array. There is no built-in lazy iteration without reaching for libraries like `lodash` or using generator functions manually.
+
+**Java** introduced `Stream` in Java 8: `.stream().map()`, `.filter()`, `.flatMap()`. Streams are **lazy** like Rust, but they carry autoboxing overhead (primitives ↔ wrapper objects) and rely on virtual dispatch through interfaces.
+
+**Haskell** has `map`, `filter`, and `concatMap` (its `flat_map`). Haskell is **lazy by default** — the entire language is lazy, not just iterators. This is powerful but can cause surprising memory behavior (thunk accumulation).
+
+**C++ (C++20)** introduced the Ranges library with `std::views::transform` and `std::views::filter`. This is the closest analogue to Rust — lazy, composable, and zero-cost. The syntax is more verbose, but the compile-time optimization story is similar.
+
+#### Why Rust's Approach Is Unique
+
+When you write `v.iter().filter(|x| ...).map(|x| ...)`, Rust creates a **unique nested type** at compile time: `Map<Filter<Iter<'_, i32>, ...>, ...>`. Each adaptor is a concrete struct wrapping the previous one. This enables:
+
+- **Monomorphization**: the compiler generates specialized machine code for your exact pipeline
+- **Inlining**: LLVM can inline `.next()` calls through the entire chain
+- **Zero dynamic dispatch**: no vtables, no interface indirection, no boxing
+
+In contrast, Java's `Stream<T>` uses dynamic dispatch through the `Spliterator` interface, and JavaScript allocates intermediate arrays.
+
+#### Comparison Table
+
+| Language | Lazy? | Zero-Cost? | Type Safety | Syntax Style |
+|------------|-------|------------|-------------|--------------------------|
+| **Rust** | Yes | Yes | Strong (unique types) | Method chaining |
+| **Python** | Generators only | No (interpreted) | Weak (duck typing) | Functions / comprehensions |
+| **JavaScript** | No (eager arrays) | No (GC + allocation) | Weak (dynamic) | Method chaining |
+| **Java** | Yes (Streams) | No (autoboxing) | Moderate (type erasure) | Method chaining |
+| **Haskell** | Yes (everything) | Mostly (GHC optimizes) | Strong | Function composition |
+| **C++20** | Yes (Ranges) | Yes | Strong | Pipe operator |
+
+> **Key takeaway:** Rust gives you the ergonomics of high-level functional pipelines (like Python or JS) with the performance of hand-written C loops. The unique-type-per-adaptor approach is the mechanism that makes this possible.
+
+---
+
 ## enumerate — Add Index
 
 Wraps each element with its index:
@@ -429,6 +470,89 @@ fn main() {
 
 ---
 
+### How Iterator Chains Are Compiled — The Call Stack Unrolling
+
+One of the most common questions about Rust iterators is: **"If I chain five adaptors, does it create five intermediate collections?"** The answer is a resounding **no**. Understanding *why* gives you deep insight into Rust's performance model.
+
+#### Pull-Based, One Element at a Time
+
+Rust iterators are **pull-based**: the consumer (like `collect()`) drives the entire pipeline by calling `.next()` on the outermost adaptor. That adaptor calls `.next()` on its inner adaptor, and so on, all the way down to the source. Each element flows through the entire chain before the next element is even considered.
+
+```text
+  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+  │ collect() │◄───│  map()   │◄───│ filter() │◄───│  iter()  │
+  │ (consumer)│    │ .next()  │    │ .next()  │    │ .next()  │
+  └──────────┘    └──────────┘    └──────────┘    └──────────┘
+       │                │                │                │
+       │  calls next()  │  calls next()  │  calls next()  │
+       ├───────────────►├───────────────►├───────────────►│
+       │                │                │    returns &3   │
+       │                │   filter checks│◄────────────────┤
+       │                │   predicate:   │                 │
+       │                │   3 is odd? ✓  │                 │
+       │   map receives │◄───────────────┤                 │
+       │   &3, returns  │                                  │
+       │◄──── 9 ────────┤                                  │
+       │ stores 9       │                                  │
+  └────┴────────────────┴──────────────────────────────────┘
+```
+
+#### What Happens When Filter Rejects an Element?
+
+If `filter`'s predicate returns `false`, **filter doesn't return to map**. Instead, it internally calls `iter.next()` again to try the next element. The outer adaptors never see rejected elements:
+
+```text
+  filter receives &4 from iter → 4 is odd? ✗ → calls iter.next() again
+  filter receives &5 from iter → 5 is odd? ✓ → returns &5 to map
+```
+
+This means `map`'s closure only runs on elements that passed the filter. No wasted computation.
+
+#### No Intermediate Collections, Ever
+
+Consider this pipeline:
+```rust
+let result: Vec<i32> = (1..=1_000_000)
+    .filter(|x| x % 2 != 0)
+    .map(|x| x * x)
+    .take(10)
+    .collect();
+```
+
+Rust does **not** create a filtered vec of 500,000 elements, then a mapped vec of 500,000 squares. Instead, it processes elements one at a time until `take` has seen 10 elements, then stops. Total elements touched: **19** (the first 19 integers, 10 of which are odd). Memory for elements in flight: **O(1)**.
+
+#### The LLVM Connection
+
+Because each adaptor is a concrete type with an inlineable `.next()` method, LLVM typically **inlines the entire chain** into a single loop. The compiled code often looks identical to what you'd write by hand:
+
+```rust
+// What you write:
+v.iter().filter(|&&x| x > 0).map(|&x| x * 2).sum::<i32>()
+
+// What LLVM often compiles it to (conceptually):
+let mut total = 0;
+for x in &v {
+    if *x > 0 {
+        total += *x * 2;
+    }
+}
+total
+```
+
+#### Pull-Based vs. Push-Based
+
+| Aspect | Pull-Based (Rust iterators) | Push-Based (RxJS / Reactive) |
+|--------|---------------------------|-----------------------------|
+| Who drives? | Consumer calls `.next()` | Producer pushes to observers |
+| Backpressure | Natural (process one at a time) | Must be managed explicitly |
+| Cancellation | Stop calling `.next()` | Unsubscribe from stream |
+| Memory | O(1) elements in flight | Depends on buffering strategy |
+| Use case | Synchronous data processing | Async event streams |
+
+> **Memory note:** A chain of N adaptors uses O(N) stack space for the iterator *structs* themselves (each adaptor struct holds the previous iterator), but only O(1) space for the elements being processed. For a typical chain of 3–5 adaptors, this is negligible.
+
+---
+
 ## Exercises
 
 ### Exercise 1: Pipeline
@@ -476,6 +600,92 @@ fn main() {
 ```
 
 </details>
+
+---
+
+### Building Your Own Adaptors — The Extension Trait Pattern
+
+Rust's standard library provides a rich set of iterator adaptors, but you aren't limited to what `std` offers. Thanks to Rust's trait system, you can **add your own methods to any iterator** using the *extension trait* pattern.
+
+#### The Pattern
+
+Define a trait with `Iterator + Sized` as a supertrait, add your method, then implement it for **all** iterators with a blanket impl:
+
+```rust
+use std::collections::HashSet;
+use std::hash::Hash;
+
+// 1. Define the adaptor struct
+struct Unique<I: Iterator> {
+    iter: I,
+    seen: HashSet<I::Item>,
+}
+
+impl<I> Iterator for Unique<I>
+where
+    I: Iterator,
+    I::Item: Eq + Hash + Clone,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Keep pulling from inner iterator until we find
+        // an element we haven't seen
+        while let Some(item) = self.iter.next() {
+            if self.seen.insert(item.clone()) {
+                return Some(item);
+            }
+        }
+        None
+    }
+}
+
+// 2. Define the extension trait
+trait IteratorExt: Iterator + Sized {
+    fn unique(self) -> Unique<Self>
+    where
+        Self::Item: Eq + Hash + Clone,
+    {
+        Unique {
+            iter: self,
+            seen: HashSet::new(),
+        }
+    }
+}
+
+// 3. Blanket impl: this makes .unique() available on ALL iterators
+impl<I: Iterator + Sized> IteratorExt for I {}
+
+fn main() {
+    let data = vec![1, 3, 2, 3, 1, 4, 2, 5];
+    let unique: Vec<i32> = data.into_iter().unique().collect();
+    println!("{:?}", unique);  // [1, 3, 2, 4, 5]
+}
+```
+
+#### This Is How `itertools` Works
+
+The popular [`itertools`](https://docs.rs/itertools) crate (one of the most downloaded Rust crates with ~100M+ downloads) uses exactly this pattern. It defines an `Itertools` trait and provides a blanket implementation for all `Iterator` types, adding methods like:
+
+- `.chunks()` — group elements into fixed-size chunks
+- `.interleave()` — alternate elements from two iterators
+- `.unique()` — deduplicate (just like our example above)
+- `.sorted()` — sort lazily collected elements
+- `.tuple_windows()` — sliding windows as tuples
+
+You use it by adding `use itertools::Itertools;` and suddenly every iterator in your program gains dozens of new methods.
+
+#### Why This Works: Rust's Trait Superpower
+
+In most languages, adding methods to a type you don't own requires inheritance (fragile), monkey-patching (unsafe), or wrapper objects (verbose). Rust's trait system lets you:
+
+1. Define new behavior (`IteratorExt`)
+2. Apply it universally via blanket impls (`impl<I: Iterator> IteratorExt for I`)
+3. Keep it opt-in (only active when the trait is in scope)
+
+Compare with **Python**, where you'd write a standalone generator function (`def unique(iterable): ...`) or use the `itertools` module (same name, completely different mechanism — Python's `itertools` is a C extension module, not a protocol extension).
+
+> **Key insight:** Rust's trait system makes the standard library infinitely extensible without modifying it. Any crate can add new methods to `Iterator`, `Future`, `Read`, or any other trait — and they compose seamlessly with existing adaptors. This is one of Rust's most powerful design decisions.
 
 ---
 

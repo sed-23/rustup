@@ -96,6 +96,41 @@ fn main() {
 
 ---
 
+### The Iterator Protocol Across Languages
+
+Rust's `Iterator` trait is remarkably simple compared to iterator protocols in other languages. Understanding the differences highlights why Rust's design is both elegant and efficient.
+
+**Python** uses `__iter__()` + `__next__()`. Termination is signaled by raising a `StopIteration` exception — yes, Python uses *exception handling* for normal control flow. Every single loop termination unwinds the call stack through the exception machinery, which is measurably slow in tight loops.
+
+**Java** uses `Iterator<T>` with two methods: `hasNext()` and `next()`. This creates a two-phase protocol — you must check `hasNext()` before calling `next()`, and if you forget, you get a `NoSuchElementException` at runtime. Nothing in the type system prevents you from calling `next()` without checking first.
+
+**C++** models iterators as *generalized pointers*. A container provides `begin()` and `end()`, and iterators support `++` (advance), `*` (dereference), and `==` (comparison). There are **five** iterator categories (Input, Output, Forward, Bidirectional, RandomAccess) each requiring different operator overloads — enormously complex to implement correctly.
+
+**JavaScript** uses the `Symbol.iterator` protocol. The `next()` method returns an object `{ value, done }` — this means every single iteration step **allocates a new object on the heap**. In a tight loop over millions of elements, that's millions of tiny allocations for the garbage collector to clean up.
+
+**Go** has **no standard iterator protocol** at all (prior to Go 1.23's range-over-func). Idiomatic Go uses channels (goroutines sending values, expensive) or callback functions. There's no unified way to compose iteration pipelines.
+
+**Rust** requires exactly **one method**: `next(&mut self) -> Option<Self::Item>`. That's it. Termination is signaled by returning `None` — a zero-cost enum variant, not an exception. The compiler can optimize `Option<T>` to have zero overhead for many types (niche optimization). No heap allocation, no exceptions, no two-phase checking.
+
+**Why `Option<T>` beats every alternative:**
+- vs exceptions (Python): no stack unwinding, no runtime cost for termination
+- vs boolean checks (Java): impossible to forget the check — you *must* pattern-match or unwrap
+- vs sentinel values (C): type-safe, cannot confuse a valid value with "end"
+- vs object allocation (JS): zero-cost, `None` is just a tag on the stack
+
+| Language | Protocol | Methods to Implement | Termination Signal | Overhead Per Element |
+|------------|------------------------------|----------------------|-------------------------------|------------------------------|
+| Rust | `Iterator` trait | 1 (`next`) | `None` (zero-cost enum) | Zero — fully inlined |
+| Python | `__iter__` + `__next__` | 2 | `StopIteration` exception | Exception machinery on end |
+| Java | `Iterator<T>` | 2 (`hasNext`+`next`) | `false` from `hasNext()` | Boolean check + boxing |
+| C++ | Pointer-like operators | 3–5 (`++`,`*`,`==`…) | Comparison with `end()` | Near-zero (but complex API) |
+| JavaScript | `Symbol.iterator` | 1 (`next`) | `{ done: true }` | Object allocation per step |
+| Go | (none standard) | N/A | Channel close / callback end | Goroutine + channel overhead |
+
+Rust achieves the **simplest protocol** of any systems language while simultaneously being the **most efficient**. One method, zero allocation, full type safety.
+
+---
+
 ## Fibonacci Iterator
 
 ```rust
@@ -347,6 +382,71 @@ fn main() {
 
 ---
 
+### The Iterator Trait's 75+ Free Methods — What You Get for Free
+
+When you implement a single method — `next()` — for your custom iterator, you instantly unlock the **entire** standard library iterator API. This is one of the most powerful payoffs in all of Rust's trait system.
+
+Here is a (non-exhaustive) sampling of what you get for free:
+
+| Category | Methods |
+|---|---|
+| Transforming | `map`, `flat_map`, `flatten`, `inspect`, `scan`, `enumerate` |
+| Filtering | `filter`, `filter_map`, `skip`, `take`, `skip_while`, `take_while`, `step_by` |
+| Combining | `zip`, `chain`, `interleave` (via itertools), `unzip` |
+| Consuming | `collect`, `sum`, `product`, `fold`, `reduce`, `for_each`, `count` |
+| Searching | `find`, `find_map`, `position`, `rposition`, `any`, `all` |
+| Min/Max | `min`, `max`, `min_by`, `max_by`, `min_by_key`, `max_by_key` |
+| Cloning | `cloned`, `copied` |
+| Ordering | `cmp`, `partial_cmp`, `eq`, `ne`, `lt`, `le`, `gt`, `ge` |
+| Peeking/Buffering | `peekable`, `fuse` |
+| Reversing | `rev` (requires `DoubleEndedIterator`) |
+| Size-aware | `last`, `nth`, `size_hint` |
+
+That's roughly **75+ provided methods** with default implementations, all built on top of your single `next()` function.
+
+**How does this work internally?** Each default method is generic over `Self` and simply calls `self.next()` in a loop. For example, here's a simplified version of how `fold` works:
+
+```rust
+// Inside the Iterator trait (simplified)
+fn fold<B, F>(mut self, init: B, mut f: F) -> B
+where
+    F: FnMut(B, Self::Item) -> B,
+{
+    let mut acc = init;
+    while let Some(item) = self.next() {
+        acc = f(acc, item);
+    }
+    acc
+}
+```
+
+Every other method — `sum`, `count`, `map`, `filter` — follows the same pattern: call `next()` repeatedly, apply some logic, return the result.
+
+**Compare this with other languages:**
+- **Java**: implement `Iterator<T>` and you get exactly **one** optional default method — `remove()`. That's it. For anything like `map` or `filter`, you need to convert to a `Stream`.
+- **C++**: implementing an iterator gives you zero free methods. Each algorithm (`std::find`, `std::transform`, `std::accumulate`) is a standalone function that requires the correct iterator category.
+- **Python**: implementing `__next__` gives you zero extra methods. You must wrap in `map()`, `filter()`, etc. as standalone builtins, or use list comprehensions.
+
+**The `size_hint()` optimization:** Beyond `next()`, you can optionally override `size_hint()` to return `(lower_bound, Option<upper_bound>)`. This tells consumers like `collect()` how much memory to pre-allocate:
+
+```rust
+// Without size_hint: collect() starts with an empty Vec,
+// reallocates 4 → 8 → 16 → 32 → ... as elements arrive.
+
+// With accurate size_hint: collect() calls Vec::with_capacity(n)
+// and does ZERO reallocations.
+fn size_hint(&self) -> (usize, Option<usize>) {
+    let remaining = (self.max - self.current) as usize;
+    (remaining, Some(remaining))  // exact bounds
+}
+```
+
+**`ExactSizeIterator`:** When your `size_hint()` returns exact bounds (lower == upper), you can also implement `ExactSizeIterator` to provide a `len()` method. This unlocks further optimizations — for example, `collect::<Vec<_>>()` can allocate exactly the right capacity with zero wasted space.
+
+This design is a masterclass in trait-based API design: **minimal requirement** (one method), **maximum payoff** (75+ methods, zero-cost abstractions, composable pipelines). Every custom iterator you write instantly becomes a first-class citizen of Rust's iterator ecosystem.
+
+---
+
 ## Double-Ended Iterators
 
 Implement `DoubleEndedIterator` to support `.rev()` and `next_back()`:
@@ -582,6 +682,92 @@ fn main() {
     // [7]
 }
 ```
+
+---
+
+### Real-World Custom Iterators — Parser, Tokenizer, Event Stream
+
+Custom iterators aren't just a tutorial exercise — they're a foundational pattern used extensively across the Rust ecosystem. Here's how real crates leverage them:
+
+**Production crates that rely on custom iterators:**
+- **`regex`**: `Matches<'a>` lazily iterates over all regex matches in a string — only does work when you call `next()`
+- **`serde_json`**: `StreamDeserializer` iterates over a stream of JSON values, parsing each one on demand
+- **`walkdir`**: `WalkDir` recursively traverses directory trees lazily — it holds a stack of directories internally and yields entries one at a time, using constant memory regardless of tree depth
+- **`csv`**: `Reader::records()` returns an iterator over CSV rows — can process **gigabytes** of CSV data with constant memory because it only holds one row in memory at a time
+
+**Common patterns for custom iterators:**
+
+**1. Stateful iterator** — the struct holds a cursor, buffer, or internal state; `next()` advances the state and yields the next item. The `GridIter` and `Words` examples above follow this pattern.
+
+**2. Chunked processing** — the iterator yields fixed-size windows or chunks from a large input. This is how audio processing, network packet parsing, and batch database operations work.
+
+**3. Infinite iterator** — like `Fibonacci`, these never return `None` on their own. They pair naturally with `.take(n)`, `.take_while(predicate)`, or `.zip()` with a finite iterator to produce finite output.
+
+**4. Tree/graph traversal** — DFS or BFS iterators that hold a stack or queue internally. Compilers iterate over AST nodes, game engines iterate over scene graphs, and file managers iterate over directory trees — all using this pattern.
+
+**Mini example — a Tokenizer iterator:**
+
+```rust
+/// Yields whitespace-delimited tokens from an input string.
+struct Tokenizer<'a> {
+    remaining: &'a str,
+}
+
+impl<'a> Tokenizer<'a> {
+    fn new(input: &'a str) -> Self {
+        Tokenizer { remaining: input }
+    }
+}
+
+impl<'a> Iterator for Tokenizer<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        // Skip leading whitespace
+        self.remaining = self.remaining.trim_start();
+        if self.remaining.is_empty() {
+            return None;
+        }
+
+        // Find the end of the current token
+        let end = self.remaining
+            .find(char::is_whitespace)
+            .unwrap_or(self.remaining.len());
+
+        let token = &self.remaining[..end];
+        self.remaining = &self.remaining[end..];
+        Some(token)
+    }
+}
+
+fn main() {
+    let input = "  fn main()  { println!(42); }  ";
+
+    // Instant access to the full iterator API:
+    let tokens: Vec<&str> = Tokenizer::new(input).collect();
+    println!("{:?}", tokens);
+    // ["fn", "main()", "{", "println!(42);", "}"]
+
+    // Count tokens
+    let count = Tokenizer::new(input).count();
+    println!("Token count: {}", count);  // 5
+
+    // Find a specific token
+    let has_fn = Tokenizer::new(input).any(|t| t == "fn");
+    println!("Contains 'fn': {}", has_fn);  // true
+
+    // Uppercase all tokens
+    let upper: Vec<String> = Tokenizer::new(input)
+        .map(|t| t.to_uppercase())
+        .collect();
+    println!("{:?}", upper);
+    // ["FN", "MAIN()", "{", "PRINTLN!(42);", "}"]
+}
+```
+
+**Key insight:** The `Tokenizer` struct implements only `next()` — a single method. Yet it instantly gains `collect`, `count`, `any`, `map`, `filter`, `fold`, `enumerate`, `zip`, and every other iterator method. Your custom iterator is a **first-class participant** in Rust's entire iterator ecosystem, composable with every adaptor and consumer in the standard library.
+
+This is the power of Rust's trait system: define the minimum contract, and the ecosystem does the rest.
 
 ---
 
