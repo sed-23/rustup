@@ -160,6 +160,68 @@ fn main() {
 
 ---
 
+### Callable Types Across Programming Languages
+
+Rust's three closure traits are unique in the programming language landscape. Most languages
+have a **single** concept of "callable thing" — Rust distinguishes **how** the callable
+interacts with its captured data at the type level. Let's compare:
+
+#### C — Function Pointers Only
+
+C has no closures at all. The only callable type is a **function pointer** (`void (*fn)(int)`).
+Function pointers carry no captured state — if you need state, you pass it as an extra
+argument (the classic `void *userdata` pattern). This is maximally efficient but ergonomically
+painful.
+
+#### C++ — Multiple Mechanisms
+
+C++ has three callable mechanisms:
+- **Function pointers** — same as C, no state
+- **Function objects (functors)** — structs with `operator()` overloaded, can carry state
+- **Lambdas** — compiler-generated classes with `operator()`, syntactic sugar for functors
+- **`std::function<void(int)>`** — type-erased wrapper that can hold any callable (heap-allocates)
+
+C++ lambdas have capture modes (`[x]` by value, `[&x]` by reference), but this isn't encoded
+in the type system — a lambda that moves out of a capture can still be called twice, leading
+to **undefined behavior**.
+
+#### Java — Functional Interfaces
+
+Java uses `@FunctionalInterface` — single-method interfaces like `Runnable`, `Function<T, R>`,
+`Consumer<T>`. Lambdas are objects implementing these interfaces. They're always **heap-allocated**
+and garbage-collected. There's no distinction between a lambda that reads vs. mutates vs.
+consumes — it's all the same `Function<T, R>` type.
+
+#### Python & JavaScript — Universal Callables
+
+In Python, anything with a `__call__` method is callable. In JavaScript, all functions are
+closures over their lexical scope. Neither language distinguishes closures from functions at
+the type level. Both use garbage collection, so there's no concept of "consuming" a capture.
+
+#### Haskell — Everything Is a Closure
+
+In Haskell, every function is a closure (partially applied functions are the norm). Since
+Haskell is purely functional and all data is immutable, there's no need to distinguish
+between read/mutate/consume — it's always read-only.
+
+#### Where Rust Stands
+
+| Language     | Callable Types | Closure vs Function Distinction | Type-Level Capture Safety | Allocation |
+|-------------|----------------|--------------------------------|--------------------------|------------|
+| **C**       | Function pointers only | No closures exist | N/A | None (stack) |
+| **C++**     | Fn ptrs, functors, lambdas, `std::function` | Capture modes exist but not in type | ❌ UB possible | Optional (stack or heap) |
+| **Java**    | Functional interfaces | No — all are interface objects | ❌ All effectively final | Always heap |
+| **Python**  | Any `__call__` | No distinction | ❌ No type system | Always heap (GC) |
+| **JavaScript** | All functions | No distinction | ❌ No type system | Always heap (GC) |
+| **Haskell** | All functions | No distinction (all immutable) | N/A (no mutation) | GC-managed |
+| **Rust**    | `Fn`, `FnMut`, `FnOnce` | **Yes — encoded in the type system** | ✅ Compile-time enforced | Stack by default |
+
+Rust is the **only mainstream language** where the type system encodes how a callable uses
+its captured data. This enables the compiler to prevent use-after-move, data races on
+closures, and accidental double-consumption — all at zero runtime cost.
+
+---
+
 ## Trait Hierarchy
 
 The three traits form a hierarchy:
@@ -207,6 +269,150 @@ fn main() {
     takes_fn_once(consume);    // ✅ FnOnce only
 }
 ```
+
+---
+
+### Why Three Traits? — The Ownership Connection
+
+Rust's three closure traits aren't arbitrary — they directly mirror Rust's **three ways to access data**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│   Access Mode       Closure Trait      Method Receiver         │
+├─────────────────────────────────────────────────────────────────┤
+│   &T   (shared ref)      Fn            call(&self)             │
+│   &mut T (exclusive ref) FnMut         call_mut(&mut self)     │
+│   T    (owned value)     FnOnce        call_once(self)         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+This is the **same ownership model** applied everywhere else in Rust — closures are no exception:
+
+- **`Fn`**: captures by **shared reference** (`&T`) — can be called unlimited times without changing anything. Like handing someone a book to read: they give it back exactly as it was.
+- **`FnMut`**: captures by **mutable reference** (`&mut T`) — can be called repeatedly but modifies its state each time. Like handing someone a notebook to write in: they change it, but you still own it.
+- **`FnOnce`**: captures **by value** (`T`) — consumes the captured data, can only be called once. Like giving someone a gift: once given, it's gone from your hands.
+
+**No other mainstream language makes this distinction!**
+
+| Language     | Closure Capture      | Memory Management | Trait Distinction? |
+|--------------|----------------------|-------------------|--------------------|
+| **Rust**     | `&T`, `&mut T`, `T`  | Ownership system  | ✅ Fn / FnMut / FnOnce |
+| Java         | Effectively final ref | GC                | ❌ Single `Function` interface |
+| Python       | Reference to scope   | GC                | ❌ Just callable |
+| JavaScript   | Reference to scope   | GC                | ❌ Just callable |
+| C++          | `[x]`, `[&x]`       | Manual / RAII     | ⚠️ Capture modes but no trait split |
+
+C++'s capture lists (`[x]` by value, `[&x]` by reference) are the closest equivalent,
+but C++ doesn't encode this in the **type system** — you can always call a C++ lambda
+multiple times even if it moves out of its captures (leading to undefined behavior).
+Rust **prevents this at compile time** via the trait hierarchy.
+
+The hierarchy means you can always "widen" the bound:
+
+```
+Fn ⊂ FnMut ⊂ FnOnce
+
+• Every Fn    closure is automatically FnMut  (reading is a subset of mutating)
+• Every FnMut closure is automatically FnOnce (mutating is a subset of consuming)
+```
+
+So if your function accepts `impl FnOnce`, it accepts **ALL** closures — it's the most
+permissive bound from the callee's perspective. Conversely, `Fn` is the most **useful**
+bound from the caller's perspective (you can call it as many times as you want).
+
+**Practical guideline:** When writing generic functions, start with the **most restrictive**
+trait that works and relax only if needed:
+
+```
+1. Try Fn    first → maximum flexibility for callers (call many times, share across threads)
+2. Try FnMut next  → needed if the closure must mutate state between calls
+3. Use FnOnce last → when you only call the closure once (thread::spawn, Option::map, etc.)
+```
+
+---
+
+### The Trait Hierarchy — Why Fn: FnMut: FnOnce
+
+The relationship `Fn: FnMut: FnOnce` is a **subtrait** (supertrait) chain defined in the
+standard library:
+
+```rust
+// Simplified from std:
+pub trait FnOnce<Args> {
+    type Output;
+    fn call_once(self, args: Args) -> Self::Output;
+}
+
+pub trait FnMut<Args>: FnOnce<Args> {
+    fn call_mut(&mut self, args: Args) -> Self::Output;
+}
+
+pub trait Fn<Args>: FnMut<Args> {
+    fn call(&self, args: Args) -> Self::Output;
+}
+```
+
+This means: **every `Fn` is also an `FnMut`**, and **every `FnMut` is also an `FnOnce`**.
+But why does this make sense?
+
+#### The Logical Argument
+
+- If a closure only **reads** its captures (`&self`), it can trivially satisfy a `&mut self`
+  requirement — not mutating is a valid form of "mutating" (you just don't change anything).
+- If a closure can be called **many times**, it can certainly be called **once** — calling
+  once is a subset of calling many times.
+
+This is the **Liskov Substitution Principle** in action: a more capable type can always
+substitute for a less capable one without breaking correctness.
+
+#### Real-World Analogy
+
+Think of a chef's skill levels:
+- **`Fn` chef**: Can make any dish perfectly, any number of times, without changing the kitchen.
+- **`FnMut` chef**: Can make dishes, but rearranges the kitchen each time.
+- **`FnOnce` chef**: Can make exactly one dish, then retires.
+
+An `Fn` chef can clearly do everything an `FnMut` chef can (just choose not to rearrange).
+An `FnMut` chef can do what an `FnOnce` chef does (just stop after one dish). The hierarchy
+is natural.
+
+#### Why This Matters in Practice
+
+When writing a function that accepts a closure, use the **least restrictive** trait to
+accept the **widest range** of closures:
+
+```rust
+// Accepts ALL closures: Fn, FnMut, AND FnOnce
+fn execute_once<F: FnOnce() -> String>(f: F) -> String {
+    f()
+}
+
+fn main() {
+    // Fn closure — works!
+    let greeting = "hello".to_string();
+    let result = execute_once(|| greeting.clone());
+    println!("{}", result);
+
+    // FnMut closure — works!
+    let mut count = 0;
+    let result = execute_once(|| {
+        count += 1;
+        format!("count: {}", count)
+    });
+    println!("{}", result);
+
+    // FnOnce closure — works!
+    let name = String::from("Alice");
+    let result = execute_once(|| {
+        name  // moves name out — can only happen once
+    });
+    println!("{}", result);
+}
+```
+
+If `execute_once` required `Fn` instead of `FnOnce`, the third closure would be **rejected**
+by the compiler — even though we only call it once. By using `FnOnce`, we tell the compiler
+"I only need to call this once," which maximizes the set of closures callers can pass in.
 
 ---
 
@@ -356,6 +562,76 @@ fn main() {
 
 ---
 
+### Closure Traits and the Standard Library
+
+The standard library uses closure traits **extensively**. Understanding which trait each
+function requires — and **why** — will deepen your intuition for the whole system.
+
+#### Key Standard Library Signatures
+
+```rust
+// Iterator methods (called potentially many times per element)
+fn map<B, F>(self, f: F) -> Map<Self, F>
+    where F: FnMut(Self::Item) -> B;          // FnMut — may track state across calls
+
+fn filter<P>(self, predicate: P) -> Filter<Self, P>
+    where P: FnMut(&Self::Item) -> bool;      // FnMut — same reason
+
+fn for_each<F>(self, f: F)
+    where F: FnMut(Self::Item);               // FnMut — side effects expected
+
+// Option / Result methods (called at most once)
+fn map<U, F>(self, f: F) -> Option<U>
+    where F: FnOnce(T) -> U;                  // FnOnce — only one value in Some
+
+fn unwrap_or_else<F>(self, f: F) -> T
+    where F: FnOnce() -> T;                   // FnOnce — called once on None
+
+// Threading (runs once, takes ownership)
+fn spawn<F, T>(f: F) -> JoinHandle<T>
+    where F: FnOnce() -> T + Send + 'static;  // FnOnce — thread runs closure once
+```
+
+Notice the pattern:
+
+| Function            | Trait      | Why This Trait?                                     |
+|---------------------|------------|-----------------------------------------------------|
+| `Iterator::map`     | `FnMut`    | Called per element; closure may track a running index |
+| `Iterator::filter`  | `FnMut`    | Called per element; might count filtered items        |
+| `Iterator::for_each`| `FnMut`    | Explicitly for side effects (mutation expected)       |
+| `Option::map`       | `FnOnce`   | At most one `Some` value — called 0 or 1 times       |
+| `Option::unwrap_or_else` | `FnOnce` | Called once when `None`                          |
+| `Result::map_err`   | `FnOnce`   | At most one `Err` — called 0 or 1 times              |
+| `thread::spawn`     | `FnOnce`   | Thread takes ownership, runs body exactly once        |
+| `Vec::sort_by`      | `FnMut`    | Comparator called O(n log n) times during sorting     |
+| `Vec::retain`       | `FnMut`    | Predicate called once per element                     |
+
+**Key insight:** Very few standard library functions require `Fn` specifically. `FnMut` is
+almost always sufficient because it also accepts `Fn` closures (remember the hierarchy).
+The stdlib chooses `FnMut` over `Fn` to give **callers maximum flexibility** — a stateful
+closure like a counter works just fine:
+
+```rust
+fn main() {
+    let names = vec!["Alice", "Bob", "Charlie"];
+
+    // map uses FnMut, so we CAN track state:
+    let mut index = 0;
+    let numbered: Vec<String> = names.iter().map(|name| {
+        index += 1;  // mutation! — requires FnMut, not Fn
+        format!("{}. {}", index, name)
+    }).collect();
+
+    println!("{:?}", numbered);
+    // ["1. Alice", "2. Bob", "3. Charlie"]
+}
+```
+
+If `map` required `Fn` instead of `FnMut`, the closure above would be rejected — the
+stdlib deliberately uses the **least restrictive trait** that's safe.
+
+---
+
 ## Exercises
 
 ### Exercise 1: Which Trait?
@@ -427,6 +703,244 @@ fn main() {
 ```
 
 </details>
+
+---
+
+### How Closure Traits Compile — The Desugaring
+
+Ever wonder what the compiler actually **does** with a closure? Each closure is transformed
+into an **anonymous struct** with a trait implementation. Understanding this desugaring
+demystifies closure behavior.
+
+#### A Simple `Fn` Closure
+
+```rust
+// What you write:
+let captured = 10;
+let add = |x: i32| x + captured;
+println!("{}", add(5));  // 15
+```
+
+The compiler transforms this into something equivalent to:
+
+```rust
+// What the compiler generates (approximately):
+struct __ClosureAdd {
+    captured: i32,      // stored by shared reference internally
+}
+
+impl Fn(i32,) -> i32 for __ClosureAdd {
+    fn call(&self, (x,): (i32,)) -> i32 {
+        x + self.captured   // &self — only reads
+    }
+}
+
+let add = __ClosureAdd { captured: 10 };
+println!("{}", add.call((5,)));  // 15
+```
+
+#### An `FnMut` Closure
+
+If the closure mutates captured state, the method takes `&mut self`:
+
+```rust
+// What you write:
+let mut count = 0;
+let mut inc = || { count += 1; };
+
+// Desugars roughly to:
+struct __ClosureInc<'a> {
+    count: &'a mut i32,
+}
+impl FnMut() for __ClosureInc<'_> {
+    fn call_mut(&mut self) {
+        *self.count += 1;   // &mut self — mutates
+    }
+}
+```
+
+#### An `FnOnce` Closure
+
+If the closure moves out of a capture, the method takes `self` (by value):
+
+```rust
+// What you write:
+let name = String::from("Alice");
+let consume = || { drop(name); };
+
+// Desugars roughly to:
+struct __ClosureConsume {
+    name: String,           // owned — moved into the struct
+}
+impl FnOnce() for __ClosureConsume {
+    fn call_once(self) {    // self by value — struct is consumed
+        drop(self.name);
+    }
+}
+```
+
+#### Why This Matters
+
+This desugaring explains several things that might otherwise seem mysterious:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Observation                    │  Explained By                    │
+├─────────────────────────────────┼──────────────────────────────────┤
+│  Every closure has a unique     │  Each anonymous struct is a      │
+│  type (can't name it)           │  distinct compiler-generated type│
+├─────────────────────────────────┼──────────────────────────────────┤
+│  Closures are zero-cost         │  The struct + call can be fully  │
+│  abstractions                   │  inlined by LLVM — no allocation │
+├─────────────────────────────────┼──────────────────────────────────┤
+│  FnOnce can only be called once │  call_once(self) consumes the    │
+│                                 │  struct — no struct left to call │
+├─────────────────────────────────┼──────────────────────────────────┤
+│  You need `dyn Fn` or Box for   │  Without type erasure, each      │
+│  heterogeneous closure storage  │  closure is a different type     │
+└─────────────────────────────────┴──────────────────────────────────┘
+```
+
+In optimized builds, the anonymous struct often **doesn't even exist** — LLVM inlines the
+captured fields and the call body directly into the surrounding function. This is why Rust
+closures can match hand-written loops in performance.
+
+**Comparison with other languages:**
+- **Java** lambdas create an object with a `call`-like method — conceptually similar, but
+  allocated on the heap and managed by the garbage collector.
+- **C++** lambdas also generate anonymous types with `operator()`, and can also be inlined.
+  However, C++ lacks the trait-level distinction, so the compiler can't enforce call-once
+  semantics at the type level.
+- **Python/JavaScript** closures hold references to scope variables — no struct, no inlining,
+  always dynamically dispatched.
+
+The trade-off: Rust's closures are **faster** (no allocation, no GC, no dynamic dispatch by
+default) but require **more type system complexity** (three traits, unique anonymous types,
+lifetime tracking). For systems programming, this trade-off is almost always worth it.
+
+---
+
+### Dynamic Dispatch with `dyn Fn` — When Generics Aren't Enough
+
+So far we've used closures with **static dispatch** — the compiler knows the exact closure
+type at compile time and monomorphizes each call site. This is zero-cost but has a limitation:
+each closure has a **unique anonymous type**, so you can't mix different closures in the
+same container.
+
+#### The Problem
+
+```rust
+fn main() {
+    let add_one = |x: i32| x + 1;
+    let double  = |x: i32| x * 2;
+
+    // ❌ Won't compile — each closure is a DIFFERENT type!
+    // let transforms: Vec<???> = vec![add_one, double];
+}
+```
+
+Even though both closures have the signature `i32 -> i32`, they are distinct anonymous types.
+Generics and `impl Fn` can't help here because they resolve to **one** concrete type.
+
+#### The Solution: `dyn Fn` with `Box`
+
+```rust
+fn main() {
+    let add_one: Box<dyn Fn(i32) -> i32> = Box::new(|x| x + 1);
+    let double:  Box<dyn Fn(i32) -> i32> = Box::new(|x| x * 2);
+    let negate:  Box<dyn Fn(i32) -> i32> = Box::new(|x| -x);
+
+    // ✅ Different closures, same container!
+    let transforms: Vec<Box<dyn Fn(i32) -> i32>> = vec![add_one, double, negate];
+
+    let input = 5;
+    for (i, f) in transforms.iter().enumerate() {
+        println!("transform[{}]({}) = {}", i, input, f(input));
+    }
+    // transform[0](5) = 6
+    // transform[1](5) = 10
+    // transform[2](5) = -5
+}
+```
+
+#### How the Vtable Works
+
+A `Box<dyn Fn(i32) -> i32>` is a **fat pointer** consisting of two machine words:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Box<dyn Fn(i32) -> i32>                                 │
+├────────────────────────┬─────────────────────────────────┤
+│  ptr to closure data   │  ptr to vtable                  │
+│  (captured variables)  │  ┌───────────────────────────┐  │
+│                        │  │ call(&self, i32) -> i32   │  │
+│                        │  │ drop(self)                │  │
+│                        │  │ size                      │  │
+│                        │  │ alignment                 │  │
+│                        │  └───────────────────────────┘  │
+└────────────────────────┴─────────────────────────────────┘
+```
+
+Each call goes through **one pointer indirection** to look up the `call` method in the
+vtable. This costs roughly 1–2 nanoseconds extra — negligible in most applications, but
+measurable in tight inner loops processing millions of elements.
+
+#### When to Use `dyn Fn`
+
+| Scenario | Use `impl Fn` / Generics | Use `Box<dyn Fn>` |
+|----------|--------------------------|--------------------|
+| Single closure, known at compile time | ✅ Zero-cost | Unnecessary overhead |
+| Storing multiple closures in a `Vec` | ❌ Can't — different types | ✅ Type-erased |
+| Returning different closures from `match` | ❌ Each arm has different type | ✅ Unified return type |
+| Callback registries / event handlers | ❌ One generic = one type | ✅ Multiple handlers |
+| Plugin systems / middleware chains | ❌ Types unknown at compile time | ✅ Dynamic composition |
+
+#### Real-World Pattern: Event Handler Registry
+
+```rust
+struct EventBus {
+    handlers: Vec<Box<dyn Fn(&str)>>,
+}
+
+impl EventBus {
+    fn new() -> Self {
+        EventBus { handlers: Vec::new() }
+    }
+
+    fn on_event(&mut self, handler: impl Fn(&str) + 'static) {
+        self.handlers.push(Box::new(handler));
+    }
+
+    fn emit(&self, event: &str) {
+        for handler in &self.handlers {
+            handler(event);  // dynamic dispatch through vtable
+        }
+    }
+}
+
+fn main() {
+    let mut bus = EventBus::new();
+
+    bus.on_event(|e| println!("Logger: {}", e));
+    bus.on_event(|e| println!("Metrics: recording {}", e));
+    bus.on_event(|e| {
+        if e.starts_with("error") {
+            println!("Alert: {}", e);
+        }
+    });
+
+    bus.emit("user.login");
+    bus.emit("error.timeout");
+}
+```
+
+#### Contrast with Other Languages
+
+In Java and JavaScript, **all** callables are dynamically dispatched — there's no choice.
+You always pay the indirection cost, even when the compiler could theoretically inline.
+Rust gives you the **choice**: use generics for the hot path (zero-cost), and `dyn Fn` for
+flexibility when you need heterogeneous collections. This "pay only for what you use"
+philosophy is a core Rust principle.
 
 ---
 
