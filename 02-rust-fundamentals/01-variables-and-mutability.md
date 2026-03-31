@@ -982,6 +982,54 @@ fn main() {
 | **Scope** | `{ let x = 5; }` | Variable lives until `}` |
 | **Unused var** | `let _x = 5;` | Underscore prefix silences warnings |
 
+### Quick Visual Summary: Variable Mutability Decision Tree
+
+```mermaid
+flowchart TD
+    A["Do you need to change\nthe value later?"] -->|No| B["Use let\n(immutable)"]
+    A -->|Yes| C{"Do you need to\nchange the TYPE?"}
+    C -->|No| D["Use let mut\n(mutable binding)"]
+    C -->|Yes| E["Use shadowing\n(let x = new_value)"]
+
+    B --> F["✅ Safest default\n✅ Compiler optimizations\n✅ Thread-safe"]
+    D --> G["✅ Can update value\n❌ Cannot change type\n⚠️ Mark intent clearly"]
+    E --> H["✅ New variable, same name\n✅ Can change type\n✅ Old value is dropped"]
+
+    style F fill:#ccffcc,stroke:#009900
+    style G fill:#fff3cd,stroke:#cc9900
+    style H fill:#cce5ff,stroke:#0066cc
+```
+
+### What You'd Expect vs What Rust Does
+
+```rust
+// In Python/JavaScript: variables are always mutable
+// let x = 5; x = 10; // totally fine in JS
+
+// In Rust: immutable by default — you MUST opt in to mutability
+fn main() {
+    let x = 5;
+    // x = 10; // ❌ COMPILE ERROR: cannot assign twice to immutable variable
+
+    let mut y = 5;
+    y = 10; // ✅ Works — explicitly opted in with `mut`
+    println!("y = {y}");
+}
+```
+
+```rust
+// Shadowing surprise: this is VALID Rust!
+fn main() {
+    let x = "hello";          // x is a &str
+    let x = x.len();          // x is now a usize — completely different type!
+    let x = x > 3;            // x is now a bool
+    println!("x = {x}");      // prints: x = true
+
+    // Each `let x` creates a BRAND NEW variable.
+    // The old one is gone. This is not mutation — it's replacement.
+}
+```
+
 ### Key Takeaways
 
 1. **`let` creates an immutable binding** — you can't change it

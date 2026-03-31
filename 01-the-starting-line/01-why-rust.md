@@ -428,6 +428,74 @@ Rust developers are among the **highest-paid** in the industry. According to Sta
 
 ---
 
+## Quick Visual Summary: How Languages Handle Memory Safety
+
+```mermaid
+flowchart TD
+    A["Memory Safety Approaches"] --> B["Manual\n(C, C++)"]
+    A --> C["Garbage Collected\n(Java, Go, Python)"]
+    A --> D["Ownership\n(Rust)"]
+
+    B --> B1["Developer calls\nmalloc/free"]
+    B1 --> B2["❌ Use-after-free\n❌ Double-free\n❌ Memory leaks"]
+
+    C --> C1["Runtime scans\nfor dead objects"]
+    C1 --> C2["✅ No manual free\n❌ GC pauses\n❌ Higher memory use"]
+
+    D --> D1["Compiler tracks\nownership at build time"]
+    D1 --> D2["✅ No manual free\n✅ No GC pauses\n✅ Zero-cost"]
+
+    style B2 fill:#ffcccc,stroke:#cc0000
+    style C2 fill:#fff3cd,stroke:#cc9900
+    style D2 fill:#ccffcc,stroke:#009900
+```
+
+### What You'd Expect vs What Rust Does
+
+Most programmers coming from other languages expect that safety requires a runtime cost. Here is a side-by-side comparison:
+
+```rust
+// Python-style thinking: "I'll just let the GC handle it"
+// Java-style thinking:   "new String() — GC will clean up"
+// C-style thinking:      "malloc, use, free — hope I don't forget"
+
+// Rust-style: ownership makes it automatic AND zero-cost
+fn main() {
+    let name = String::from("Alice"); // allocated on heap
+    println!("Hello, {name}!");
+} // `name` is automatically freed here — no GC, no manual free
+  // The compiler inserted the cleanup code at compile time!
+```
+
+```rust
+// What you'd expect: "Can I use a value after giving it away?"
+fn main() {
+    let greeting = String::from("hello");
+    let moved = greeting; // ownership transferred
+
+    // println!("{greeting}"); // ❌ COMPILE ERROR — not a runtime crash!
+    // Rust catches this BEFORE your program runs.
+
+    println!("{moved}"); // ✅ This works — `moved` owns the data now
+}
+```
+
+```rust
+// What you'd expect: "Can two things modify the same data?"
+fn main() {
+    let mut data = vec![1, 2, 3];
+    // let r1 = &mut data;
+    // let r2 = &mut data; // ❌ COMPILE ERROR — no two mutable refs!
+    // In C, this compiles fine and causes a data race at runtime.
+
+    let r1 = &mut data;
+    r1.push(4);
+    println!("{:?}", r1); // ✅ One mutable ref at a time — safe!
+}
+```
+
+---
+
 ## Summary
 
 | Point | Detail |
