@@ -1018,6 +1018,63 @@ Explain in your own words why a `String` needs both stack and heap memory, while
 | References (`&T`) | `Box<T>` data |
 | Struct metadata (if contains heap types) | Any dynamically sized data |
 
+### Quick Visual Summary: Memory Flow in Rust
+
+```mermaid
+flowchart TD
+    A["Rust Value Created"] --> B{"Is the size known\nat compile time?"}
+    B -->|"Yes (i32, bool, [u8; 4])"| C["Stored on STACK"]
+    B -->|"No (String, Vec, Box)"| D["Metadata on STACK\nData on HEAP"]
+
+    C --> E["Dropped when scope ends\n(stack frame popped)"]
+    D --> F["Owner goes out of scope"]
+    F --> G["Rust calls drop()\nautomatically"]
+    G --> H["Heap memory freed\nNo GC needed!"]
+
+    style C fill:#ccffcc,stroke:#009900
+    style D fill:#cce5ff,stroke:#0066cc
+    style H fill:#ccffcc,stroke:#009900
+```
+
+### What You'd Expect vs What Rust Does
+
+```rust
+// In C: you must manually free heap memory
+// int *p = malloc(sizeof(int)); free(p);
+
+// In Java: garbage collector finds and frees unreachable objects
+// String s = new String("hello"); // GC handles it... eventually
+
+// In Rust: the compiler inserts free at exactly the right place
+fn main() {
+    let s = String::from("hello"); // allocates on heap
+    println!("{s}");
+} // ← Rust automatically calls `drop(s)` here. Heap freed instantly.
+  // No GC scan. No manual free. No leak possible.
+```
+
+```rust
+// What you'd expect: "Can I return a reference to a local variable?"
+// In C: yes, and it compiles — then crashes at runtime (dangling pointer!)
+// In Rust: the compiler stops you cold.
+
+// fn dangling() -> &String {     // ❌ WON'T COMPILE
+//     let s = String::from("hi");
+//     &s                          // s is freed when function returns!
+// }                               // Returning &s would be a dangling pointer.
+
+// Instead, return the owned value:
+fn not_dangling() -> String {
+    let s = String::from("hi");
+    s // ownership moves to the caller — no dangling reference!
+}
+
+fn main() {
+    let result = not_dangling();
+    println!("{result}"); // ✅ safe!
+}
+```
+
 ### Key Takeaways
 
 1. **Stack = fast, fixed-size, automatic.** Data is cleaned up when the function returns.
