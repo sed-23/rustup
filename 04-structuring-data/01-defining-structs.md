@@ -949,6 +949,68 @@ fn main() {
 | Tuple struct | `struct S(T, U)` | `s.0, s.1` | Newtype pattern, quick grouping |
 | Unit struct | `struct S;` | N/A | Marker types, trait impl |
 
+### Quick Visual Summary: Struct Memory Layout
+
+```mermaid
+flowchart LR
+    subgraph Stack["Stack Memory"]
+        S["struct User\n─────────\nname: ptr ──→\nage: 30\nactive: true"]
+    end
+
+    subgraph Heap["Heap Memory"]
+        H["A l i c e"]
+    end
+
+    S -->|"name pointer"| H
+
+    style Stack fill:#e8f5e9,stroke:#4caf50
+    style Heap fill:#e3f2fd,stroke:#2196f3
+```
+
+**What You'd Expect vs What Rust Does:**
+
+```rust
+// In most languages, structs/objects can have uninitialized fields:
+// C:    struct User u;   // all fields are garbage!
+// Java: User u = new User(); // fields get defaults (null, 0, false)
+
+// In Rust: EVERY field must be initialized. No exceptions.
+#[derive(Debug)]
+struct User {
+    name: String,
+    age: u32,
+}
+
+fn main() {
+    // let u = User { name: String::from("Alice") };
+    // ❌ COMPILE ERROR: missing field `age`
+
+    let u = User {
+        name: String::from("Alice"),
+        age: 30,
+    }; // ✅ Every field initialized — no surprise nulls!
+    println!("{:?}", u);
+}
+```
+
+```rust
+// Struct update syntax can surprise you with moves:
+#[derive(Debug)]
+struct Config {
+    name: String,
+    debug: bool,
+}
+
+fn main() {
+    let c1 = Config { name: String::from("app"), debug: true };
+    let c2 = Config { debug: false, ..c1 }; // `name` is MOVED from c1!
+
+    // println!("{}", c1.name);  // ❌ c1.name was moved into c2
+    println!("{}", c1.debug);    // ✅ bool is Copy — still accessible
+    println!("{:?}", c2);        // ✅ c2 owns the String now
+}
+```
+
 **Key Takeaways:**
 1. Structs group related data under a single type
 2. All fields must be initialized — no defaults

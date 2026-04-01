@@ -495,6 +495,61 @@ fn stats(data: &[i32]) -> (f64, f64, i32) {
 | Sort | `sort()` | O(n log n) |
 | Length | `len()` | O(1) |
 
+### Quick Visual Summary: Vec Memory Layout
+
+```mermaid
+flowchart LR
+    subgraph Stack["Stack (Vec metadata)"]
+        V["Vec&lt;i32&gt;\n─────────\nptr ──→\nlen: 3\ncapacity: 4"]
+    end
+
+    subgraph Heap["Heap (actual data)"]
+        H["| 10 | 20 | 30 | __ |"]
+    end
+
+    V -->|"pointer to data"| H
+
+    style Stack fill:#e8f5e9,stroke:#4caf50
+    style Heap fill:#e3f2fd,stroke:#2196f3
+```
+
+**What You'd Expect vs What Rust Does:**
+
+```rust
+// In Python: lists just grow magically
+//   nums = [1, 2, 3]; nums.append(4)  # no problem
+
+// In Rust: Vec grows too, but you can SEE the mechanics
+fn main() {
+    let mut v = Vec::with_capacity(2); // pre-allocate space for 2
+    println!("len={}, cap={}", v.len(), v.capacity()); // len=0, cap=2
+
+    v.push(10);
+    v.push(20);
+    println!("len={}, cap={}", v.len(), v.capacity()); // len=2, cap=2
+
+    v.push(30); // exceeds capacity! Vec allocates new, larger buffer
+    println!("len={}, cap={}", v.len(), v.capacity()); // len=3, cap=4
+    // The old buffer is freed. All data was copied to the new one.
+}
+```
+
+```rust
+// Indexing pitfall: panics vs safe access
+fn main() {
+    let v = vec![10, 20, 30];
+
+    // This panics at runtime if index is out of bounds:
+    // let val = v[99]; // 💥 thread 'main' panicked!
+
+    // Safe alternative — returns None instead of panicking:
+    match v.get(99) {
+        Some(val) => println!("Found: {val}"),
+        None => println!("Index out of bounds — no crash!"),
+    }
+}
+```
+
 ---
 
 **Next:** [Vector Memory Layout →](./02-vector-memory-layout.md)
