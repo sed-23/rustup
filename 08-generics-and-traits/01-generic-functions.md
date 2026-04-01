@@ -762,6 +762,48 @@ fn main() {
 | Turbofish `::<>`      | Explicit type annotation when inference isn't enough            |
 | Common patterns       | identity, swap, transform, min/max                              |
 
+### Quick Visual Summary: Monomorphization Pipeline
+
+```mermaid
+flowchart TD
+    A["Generic Function\nfn largest&lt;T&gt;(list: &[T]) → &T"] --> B["Compiler finds all call sites"]
+    B --> C["Call with i32"]
+    B --> D["Call with char"]
+    B --> E["Call with f64"]
+
+    C --> F["Generates\nlargest_i32()"]
+    D --> G["Generates\nlargest_char()"]
+    E --> H["Generates\nlargest_f64()"]
+
+    F --> I["Final Binary\n3 specialized functions\nZero runtime dispatch\nSame speed as hand-written"]
+    G --> I
+    H --> I
+
+    style A fill:#e3f2fd,stroke:#2196f3
+    style I fill:#ccffcc,stroke:#009900
+```
+
+**What You'd Expect vs What Rust Does:**
+
+```rust
+// In Java: generics are erased at runtime — List<String> becomes List
+// In Go: generics use dictionary passing — slight overhead
+// In Rust: generics are FULLY specialized at compile time
+
+// This generic function:
+fn add_one<T: std::ops::Add<Output = T> + From<u8>>(x: T) -> T {
+    x + T::from(1u8)
+}
+
+fn main() {
+    let a: i32 = add_one(41);       // compiler creates add_one_i32
+    let b: f64 = add_one(41.0_f64); // compiler creates add_one_f64
+
+    println!("{a}, {b}"); // 42, 42.0
+    // Both calls are as fast as if you wrote separate functions!
+}
+```
+
 ### Key Takeaway
 
 Rust generics give you **the flexibility of writing code once** and **the performance of hand-specialized code**. The compiler does the duplication for you — correctly, every time.
