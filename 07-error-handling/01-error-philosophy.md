@@ -1496,6 +1496,53 @@ fn main() {
 | **History** | Return codes (C) → Exceptions (C++/Java) → Algebraic types (Haskell) → Rust's synthesis |
 | **Errors as values** | Visible in signatures, enforced by compiler, zero-cost, composable |
 
+### Quick Visual Summary: Error Handling Decision Flow
+
+```mermaid
+flowchart TD
+    A["Something went wrong"] --> B{"Can the program\nreasonably recover?"}
+    B -->|"Yes"| C["Use Result&lt;T, E&gt;"]
+    B -->|"No — it's a bug"| D["Use panic!"]
+
+    C --> E{"How to handle it?"}
+    E --> F["match Ok/Err\n(most explicit)"]
+    E --> G["? operator\n(propagate up)"]
+    E --> H[".unwrap()\n(crash if Err)\n⚠️ prototyping only"]
+
+    D --> I["Program prints\nerror + backtrace\nand terminates"]
+
+    style C fill:#ccffcc,stroke:#009900
+    style D fill:#ffcccc,stroke:#cc0000
+    style F fill:#e8f5e9,stroke:#4caf50
+    style G fill:#e8f5e9,stroke:#4caf50
+    style H fill:#fff3cd,stroke:#cc9900
+```
+
+**What You'd Expect vs What Rust Does:**
+
+```rust
+// In Python/Java: exceptions are invisible in function signatures
+//   def read_file(path):  # might throw IOError, but signature doesn't say!
+//       return open(path).read()
+
+// In Rust: the return type TELLS you it can fail
+use std::fs;
+
+fn read_file(path: &str) -> Result<String, std::io::Error> {
+    fs::read_to_string(path) // returns Result — caller MUST handle it
+}
+
+fn main() {
+    // The compiler WARNS you if you ignore a Result:
+    // read_file("data.txt"); // ⚠️ warning: unused `Result` that must be used
+
+    match read_file("data.txt") {
+        Ok(contents) => println!("File: {contents}"),
+        Err(e) => println!("Error: {e}"), // no surprise exceptions!
+    }
+}
+```
+
 ---
 
 **Next:** [panic! & Unrecoverable Errors →](./02-panic.md)

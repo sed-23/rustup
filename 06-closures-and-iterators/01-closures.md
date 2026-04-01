@@ -950,6 +950,47 @@ fn main() {
 | As return | `impl Fn(...)` or `Box<dyn Fn(...)>` |
 | Vs function | Closures capture env; functions don't |
 
+### Quick Visual Summary: How Closures Capture Variables
+
+```mermaid
+flowchart TD
+    A["Closure uses a variable\nfrom its environment"] --> B{"How does the\nclosure use it?"}
+    B -->|"Only reads it"| C["Captures by &T\n(immutable borrow)\nImplements Fn"]
+    B -->|"Modifies it"| D["Captures by &mut T\n(mutable borrow)\nImplements FnMut"]
+    B -->|"Moves/consumes it"| E["Captures by value\n(takes ownership)\nImplements FnOnce"]
+
+    C --> F["Original variable\nstill usable ✅"]
+    D --> G["Original variable\ntemporarily locked ⚠️"]
+    E --> H["Original variable\nmoved — gone ❌"]
+
+    style C fill:#ccffcc,stroke:#009900
+    style D fill:#fff3cd,stroke:#cc9900
+    style E fill:#ffcccc,stroke:#cc0000
+```
+
+**What You'd Expect vs What Rust Does:**
+
+```rust
+// In JavaScript/Python: closures always capture by reference
+//   let x = 10;
+//   let f = () => x;  // JS: captures reference to x
+
+// In Rust: the compiler picks the LEAST powerful capture mode needed
+fn main() {
+    let name = String::from("Alice");
+
+    // This closure only READS `name` → captured by &String (borrow)
+    let greet = || println!("Hello, {name}!");
+    greet();
+    println!("Still have name: {name}"); // ✅ name is still valid
+
+    // With `move`: closure TAKES OWNERSHIP regardless
+    let owned_greet = move || println!("Hello, {name}!");
+    owned_greet();
+    // println!("{name}"); // ❌ name was moved into the closure
+}
+```
+
 ---
 
 **Next:** [Closure Traits →](./02-closure-traits.md)
