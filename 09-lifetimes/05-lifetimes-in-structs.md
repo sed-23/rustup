@@ -707,6 +707,168 @@ For each scenario, decide whether the struct field should own or borrow the data
 
 ---
 
+## Advanced Struct Lifetime Patterns
+
+### Multiple Lifetime Parameters
+
+When a struct holds references from **two independent sources**, use two lifetime parameters:
+
+```rust
+/// A join view over two separate string slices.
+/// `'a` and `'b` are independent — they can have different lifetimes.
+struct JoinView<'a, 'b> {
+    left: &'a str,
+    right: &'b str,
+}
+
+impl<'a, 'b> JoinView<'a, 'b> {
+    fn new(left: &'a str, right: &'b str) -> Self {
+        JoinView { left, right }
+    }
+
+    fn display(&self) {
+        println!("{} | {}", self.left, self.right);
+    }
+}
+
+fn main() {
+    let greeting = String::from("Hello");
+    let view;
+    {
+        let name = String::from("Alice");
+        view = JoinView::new(&greeting, &name);
+        view.display(); // "Hello | Alice"
+        // `view` must stay inside this block because `name` ends here
+    }
+    // `view` can't be used here — `name` was dropped
+}
+```
+
+The compiler tracks `'a` and `'b` separately. `JoinView` only lives as long as the *shorter* of its two sources, enforced automatically.
+
+### Lifetimes in `impl` Blocks
+
+When you implement methods on a struct with lifetime parameters, you must declare those lifetimes on the `impl` too:
+
+```rust
+struct Parser<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+// Declare 'a on `impl`, then use it on the type
+impl<'a> Parser<'a> {
+    fn new(input: &'a str) -> Self {
+        Parser { input, pos: 0 }
+    }
+
+    // Elision Rule 3 handles the return: borrows from `&self`
+    fn remaining(&self) -> &str {
+        &self.input[self.pos..]
+    }
+
+    // Explicit: the returned slice borrows from the original input ('a),
+    // NOT just from &self (which could be shorter-lived)
+    fn peek_word(&self) -> &'a str {
+        let rest = &self.input[self.pos..];
+        rest.split_whitespace().next().unwrap_or("")
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.pos = (self.pos + n).min(self.input.len());
+    }
+}
+
+fn main() {
+    let source = String::from("fn main() {}");
+    let mut p = Parser::new(&source);
+    println!("First word: {}", p.peek_word()); // "fn"
+    p.advance(3);
+    println!("Remaining: {}", p.remaining());  // "main() {}"
+}
+```
+
+Notice `peek_word` returns `&'a str` — the returned slice lives as long as the *input string*, not just the Parser. This means you could drop the `Parser` and still use the returned slice safely.
+
+### The Self-Referential Struct Problem
+
+A common wish among beginners: "I want a struct that owns a `String` and also holds a reference to part of that `String`."
+
+```rust
+// ❌ This CANNOT work in safe Rust — ever
+struct SelfRef {
+    data: String,
+    slice: &str,  // wants to point into `data`
+    // Problem: if `data` moves (e.g., Vec reallocates), `slice` dangles!
+}
+```
+
+This is fundamentally unsound: if the struct moves in memory, the `data` field moves but the `slice` pointer still points to the old address. Rust prevents this entirely.
+
+**What to do instead:**
+
+```rust
+// Option 1: Store an index/range instead of a reference
+struct OwnedSlice {
+    data: String,
+    start: usize,
+    end: usize,
+}
+
+impl OwnedSlice {
+    fn slice(&self) -> &str {
+        &self.data[self.start..self.end]
+    }
+}
+
+// Option 2: Use Arc<String> so both owner and viewer share the same allocation
+use std::sync::Arc;
+
+struct SharedView {
+    source: Arc<String>,
+    start: usize,
+    end: usize,
+}
+
+impl SharedView {
+    fn text(&self) -> &str {
+        &self.source[self.start..self.end]
+    }
+}
+```
+
+For truly self-referential structs (rare), the `ouroboros` or `self_cell` crates provide safe abstractions using pinning. But most of the time, storing an index is the right answer.
+
+### Owned Data vs References in Structs — Decision Guide
+
+```
+Should this field be &'a T or owned T?
+                        │
+          ┌─────────────┴──────────────┐
+          │                            │
+    Is the struct                Is the struct
+   short-lived?                 long-lived / stored
+   (lives inside one            in a collection /
+    function call)              returned from fn?
+          │                            │
+          ▼                            ▼
+   Consider &'a T              Use owned T (String,
+   (zero-copy, fast)           Vec<T>, Box<T>, Arc<T>)
+          │
+          │  But also ask:
+          ▼
+   Does it cross                Is it sent to
+   thread boundaries?           another thread?
+          │                            │
+          ▼                            ▼
+   &'a T won't work            Use Arc<T> or
+   (not Send unless T:Send)    owned + Send types
+```
+
+**Rule of thumb:** Start with owned data (`String` instead of `&str`, `Vec<T>` instead of `&[T]`). Only switch to references when you have a measured performance reason and can clearly show the struct stays within a single scope.
+
+---
+
 <p align="center">
   <strong>Tutorial 5 of 7 — Stage 9: Lifetimes</strong>
 </p>
