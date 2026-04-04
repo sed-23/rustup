@@ -696,6 +696,184 @@ No explicit lifetimes needed — the compiler infers that the return borrows fro
 
 ---
 
+## Real-World Lifetime Patterns in Functions
+
+Now that you understand the mechanics, let's look at how lifetimes appear in real Rust codebases.
+
+### Pattern 1 — Zero-Copy String Parsers
+
+One of the most common uses of lifetime annotations is **zero-copy parsing** — reading a slice out of a larger string without allocating new memory.
+
+```rust
+/// Extract the value from a "key=value" pair.
+/// The returned slice borrows from `input` — zero allocation.
+fn parse_value<'a>(input: &'a str) -> Option<&'a str> {
+    let pos = input.find('=')?;
+    Some(&input[pos + 1..])
+}
+
+fn main() {
+    let config = String::from("timeout=30");
+
+    // `value` is a slice into `config`, same lifetime, no copy
+    if let Some(value) = parse_value(&config) {
+        println!("Value: {}", value); // "30"
+    }
+}
+```
+
+The `'a` tells the compiler: *"the returned slice is a window into the same string you passed in."* No `String` allocation, no cloning.
+
+### Pattern 2 — Asymmetric Lifetimes (Output From One Input Only)
+
+When a function takes multiple references but the output only borrows from *one* of them, use **separate lifetime parameters**:
+
+```rust
+/// Search for `needle` in `haystack`.
+/// The returned slice (if found) borrows from `haystack`, not from `needle`.
+fn find_in<'h, 'n>(haystack: &'h str, needle: &'n str) -> Option<&'h str> {
+    let len = needle.len();
+    for i in 0..=haystack.len().saturating_sub(len) {
+        if &haystack[i..i + len] == needle {
+            return Some(&haystack[i..i + len]);
+        }
+    }
+    None
+}
+
+fn main() {
+    let text = String::from("the quick brown fox");
+    let result = {
+        let pattern = String::from("quick");  // shorter-lived
+        find_in(&text, &pattern)
+        // `pattern` is dropped here — but that's fine!
+        // The return type is `&'h str`, tied only to `text`
+    };
+    println!("{:?}", result); // Some("quick") — still valid!
+}
+```
+
+If you had used a single `'a` for both parameters, the compiler would tie the return lifetime to the *shorter* of the two, and the code above would fail even though it's perfectly safe.
+
+### Pattern 3 — Non-Lexical Lifetimes (NLL)
+
+Before Rust 2018, borrows lasted until the **end of the enclosing block** regardless of when you last used the value. This caused many frustrating false positives.
+
+```
+Lexical lifetimes (pre-2018):
+
+  let r;                   ← borrow declared here
+  let first = &v[0];       ← borrow STARTS (lexical: lasts to end of block)
+  println!("{}", first);   ← last actual use
+  v.push(4);               ← ERROR even though first is dead!
+  ...
+}                          ← borrow ENDS (too late)
+```
+
+**With NLL (Rust 2018+, on by default today):**
+
+```rust
+fn main() {
+    let mut v = vec![1, 2, 3];
+    let first = &v[0];       // borrow starts
+    println!("{}", first);   // last USE — borrow ends HERE under NLL
+    v.push(4);               // ✅ OK — borrow already ended
+    println!("{:?}", v);     // [1, 2, 3, 4]
+}
+```
+
+NLL tracks the *last use* of a reference, not the end of its lexical scope. Today the compiler just does the right thing — you rarely need to think about it. But knowing it exists explains why code that "should work" sometimes failed in older Rust.
+
+### Lifetime Troubleshooting Guide
+
+Here are the 5 most common lifetime compiler errors and their fixes:
+
+#### Error 1 — Ambiguous return lifetime (multiple inputs)
+
+```rust
+// ❌ ERROR: missing lifetime specifier
+fn longer(a: &str, b: &str) -> &str {
+    if a.len() > b.len() { a } else { b }
+}
+
+// ✅ FIX: annotate which input the output borrows from
+fn longer<'a>(a: &'a str, b: &'a str) -> &'a str {
+    if a.len() > b.len() { a } else { b }
+}
+```
+
+#### Error 2 — Returning a reference to a local variable
+
+```rust
+// ❌ ERROR: `greeting` dropped at end of function
+fn greet(name: &str) -> &str {
+    let greeting = format!("Hello, {}!", name);
+    &greeting  // dangling reference!
+}
+
+// ✅ FIX: return an owned String
+fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+```
+
+#### Error 3 — Borrow outlives the owner
+
+```rust
+// ❌ ERROR: `x` does not live long enough
+fn main() {
+    let r;
+    {
+        let x = 5;
+        r = &x;    // borrow of `x`
+    }              // `x` dropped here
+    println!("{}", r); // dangling reference!
+}
+
+// ✅ FIX: move the owner to the outer scope
+fn main() {
+    let x = 5;
+    let r = &x;
+    println!("{}", r); // fine — same scope
+}
+```
+
+#### Error 4 — Struct holding a reference without lifetime
+
+```rust
+// ❌ ERROR: missing lifetime specifier
+struct Excerpt {
+    text: &str,
+}
+
+// ✅ FIX: declare the lifetime on the struct
+struct Excerpt<'a> {
+    text: &'a str,
+}
+```
+
+#### Error 5 — Implicit method return tied to wrong input
+
+```rust
+struct Doc { content: String }
+
+impl Doc {
+    // ❌ ERROR: compiler can't tell if return borrows `self` or `fallback`
+    fn get_or<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.content.is_empty() { fallback } else { &self.content }
+    }
+    // (actually this compiles — but if you change the return to only ever
+    // come from `self`, you can drop the lifetime on `fallback` entirely:)
+
+    // ✅ CLEANER when output always comes from `self`:
+    fn get(&self) -> &str {  // elision handles it
+        &self.content
+    }
+}
+```
+
+---
+
 <p align="center">
   <strong>Tutorial 3 of 7 — Stage 9: Lifetimes</strong>
 </p>
