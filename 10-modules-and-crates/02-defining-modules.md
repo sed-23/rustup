@@ -792,6 +792,192 @@ fn main() {
 
 ---
 
+## Real-World Module Organization Patterns
+
+### Pattern 1 — Organize by Feature, Not by Type
+
+A common beginner mistake is organizing modules like this:
+
+```
+src/
+  models/      ← all structs here
+  handlers/    ← all functions here
+  errors/      ← all error types here
+```
+
+This forces you to jump between three files every time you touch one feature. The **feature-based pattern** keeps related code together:
+
+```
+src/
+  users/       ← everything about users: struct, handler, errors
+  posts/       ← everything about posts: struct, handler, errors
+  auth/        ← everything about auth
+  main.rs
+```
+
+In Rust:
+```rust
+// src/main.rs
+mod users;
+mod posts;
+mod auth;
+
+fn main() {
+    // ...
+}
+```
+
+```rust
+// src/users/mod.rs
+pub struct User { pub id: u64, pub name: String }
+
+pub fn create_user(name: &str) -> User {
+    User { id: 1, name: name.to_string() }
+}
+
+#[derive(Debug)]
+pub enum UserError { NotFound(u64), NameTooLong }
+```
+
+Everything a reader needs to understand "users" is in one place.
+
+### Pattern 2 — The Prelude Pattern
+
+Popular libraries like `tokio` and `serde` provide a `prelude` module that re-exports the most commonly used items. Users import the whole prelude with one line.
+
+```rust
+// src/prelude.rs — your library's "starter pack"
+pub use crate::config::Config;
+pub use crate::error::{Error, Result};
+pub use crate::client::Client;
+pub use crate::users::User;
+```
+
+```rust
+// Users of your library write just:
+use my_library::prelude::*;
+
+// Instead of:
+use my_library::config::Config;
+use my_library::error::{Error, Result};
+use my_library::client::Client;
+```
+
+This is safe use of glob imports because the prelude is explicitly curated — you control exactly what goes in it.
+
+### Pattern 3 — The Internal Module Pattern
+
+Hide implementation details with a private `internal` or `detail` module:
+
+```rust
+// src/lib.rs
+mod internal;          // private — users can't access this
+
+pub mod api;           // public — the interface users see
+
+// src/internal.rs
+pub(crate) fn hash_password(pw: &str) -> String {
+    // implementation detail
+    format!("{:x}", pw.len()) // simplified
+}
+
+// src/api.rs
+use crate::internal;
+
+pub fn register(username: &str, password: &str) -> bool {
+    let _hash = internal::hash_password(password);
+    // ... store user
+    true
+}
+```
+
+`pub(crate)` means "public within this crate, private to the outside world." The internal module is an implementation detail — callers only see `api`.
+
+### Mini-Project Example — URL Shortener
+
+Here's a realistic module structure for a URL shortener service:
+
+```
+url-shortener/
+└── src/
+    ├── main.rs
+    ├── config.rs       ← app config (port, db URL)
+    ├── store/
+    │   ├── mod.rs      ← trait Store + pub use
+    │   ├── memory.rs   ← in-memory implementation
+    │   └── sqlite.rs   ← SQLite implementation
+    ├── routes/
+    │   ├── mod.rs      ← registers all routes
+    │   ├── shorten.rs  ← POST /shorten
+    │   └── redirect.rs ← GET /:code
+    └── error.rs        ← AppError enum
+```
+
+```mermaid
+graph TD
+    main["main.rs<br/>(entry point)"]
+    config["config.rs<br/>AppConfig"]
+    store["store/mod.rs<br/>trait Store"]
+    memory["store/memory.rs<br/>MemoryStore"]
+    sqlite["store/sqlite.rs<br/>SqliteStore"]
+    routes["routes/mod.rs<br/>router setup"]
+    shorten["routes/shorten.rs<br/>POST /shorten"]
+    redirect["routes/redirect.rs<br/>GET /:code"]
+    error["error.rs<br/>AppError"]
+
+    main --> config
+    main --> store
+    main --> routes
+    store --> memory
+    store --> sqlite
+    routes --> shorten
+    routes --> redirect
+    shorten --> store
+    redirect --> store
+    shorten --> error
+    redirect --> error
+```
+
+```rust
+// src/store/mod.rs
+mod memory;
+mod sqlite;
+
+pub use memory::MemoryStore;
+pub use sqlite::SqliteStore;
+
+pub trait Store: Send + Sync {
+    fn save(&self, code: &str, url: &str);
+    fn lookup(&self, code: &str) -> Option<String>;
+}
+
+// src/store/memory.rs
+use std::collections::HashMap;
+use std::sync::Mutex;
+use super::Store;
+
+pub struct MemoryStore(Mutex<HashMap<String, String>>);
+
+impl MemoryStore {
+    pub fn new() -> Self {
+        MemoryStore(Mutex::new(HashMap::new()))
+    }
+}
+
+impl Store for MemoryStore {
+    fn save(&self, code: &str, url: &str) {
+        self.0.lock().unwrap().insert(code.to_string(), url.to_string());
+    }
+    fn lookup(&self, code: &str) -> Option<String> {
+        self.0.lock().unwrap().get(code).cloned()
+    }
+}
+```
+
+The `pub use` in `store/mod.rs` means callers write `use url_shortener::store::MemoryStore` rather than reaching into the internal `memory` submodule.
+
+---
+
 <p align="center">
   <strong>Tutorial 2 of 7 — Stage 10: Modules & Crates</strong>
 </p>
