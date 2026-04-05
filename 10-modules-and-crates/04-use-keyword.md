@@ -792,6 +792,146 @@ fn main() {
 
 ---
 
+## Idiomatic Import Patterns in Real Rust Projects
+
+### The Standard Import Grouping Convention
+
+Well-written Rust files group `use` statements in this order, separated by blank lines:
+
+```rust
+// 1. Standard library
+use std::collections::HashMap;
+use std::fmt;
+use std::io::{self, Read, Write};
+
+// 2. External crates (from Cargo.toml)
+use serde::{Deserialize, Serialize};
+use tokio::runtime::Runtime;
+
+// 3. Local crate (your own modules)
+use crate::config::Config;
+use crate::error::{AppError, Result};
+use super::utils::hash;
+```
+
+This ordering is enforced by `rustfmt` and Clippy. It makes it immediately clear what comes from the standard library, what are third-party dependencies, and what is local code.
+
+### When Glob Imports Are Acceptable
+
+Clippy warns about `use module::*` by default — with good reason. But there are three places where globs are idiomatic:
+
+```rust
+// 1. Test modules — glob the parent for convenience
+#[cfg(test)]
+mod tests {
+    use super::*;  // ✅ idiomatic in test modules
+
+    #[test]
+    fn test_something() { /* ... */ }
+}
+
+// 2. Your own carefully-curated prelude module
+pub mod prelude {
+    pub use crate::client::Client;
+    pub use crate::error::Result;
+}
+// Users: use mylib::prelude::*; — the glob is safe because YOU own the prelude
+
+// 3. Enum variants in a local scope
+use Color::*;  // ✅ OK when you're doing a lot with Color variants
+let c = Red;   // instead of Color::Red every time
+```
+
+Everywhere else, prefer explicit imports. Glob imports in library code make it hard for readers (and IDEs) to know where names come from.
+
+### Building a Clean Public API with `pub use`
+
+The most powerful use of `pub use` is **facade design** — internal modules can be organized however you like, but users see a clean, flat API:
+
+```rust
+// Internal structure (messy but organized for maintainability):
+// src/
+//   lib.rs
+//   net/tcp.rs      ← TcpClient
+//   net/udp.rs      ← UdpClient
+//   codec/json.rs   ← JsonCodec
+//   codec/binary.rs ← BinaryCodec
+
+// src/lib.rs — the public facade
+mod net;
+mod codec;
+
+// Re-export the items users actually need
+pub use net::tcp::TcpClient;
+pub use net::udp::UdpClient;
+pub use codec::json::JsonCodec;
+pub use codec::binary::BinaryCodec;
+
+// Users write:
+//   use mylib::TcpClient;   ← flat, clean
+// Instead of:
+//   use mylib::net::tcp::TcpClient;  ← exposing internals
+```
+
+This lets you reorganize internals without breaking callers.
+
+### Real Pattern: How `serde` Does It
+
+The `serde` crate is a great example. It re-exports everything users need from a clean top-level:
+
+```rust
+// How serde exposes its API (simplified):
+pub use serde_derive::{Deserialize, Serialize};  // re-export derive macros
+pub use de::Deserialize;
+pub use ser::Serialize;
+
+// Users just write:
+use serde::{Deserialize, Serialize};
+// They don't need to know serde has internal `de` and `ser` submodules
+```
+
+And the derive macros live in a separate `serde_derive` crate entirely — but `serde` re-exports them so users only need one dependency in their `Cargo.toml`.
+
+### How `tokio` Uses Its Prelude
+
+```rust
+// tokio's prelude (simplified):
+pub mod prelude {
+    pub use crate::io::{AsyncRead, AsyncReadExt};
+    pub use crate::io::{AsyncWrite, AsyncWriteExt};
+    pub use crate::stream::StreamExt;
+}
+
+// Users of tokio write:
+use tokio::prelude::*;
+// And get all the async traits they need in one line
+```
+
+### `use` in `impl` Blocks and Functions
+
+You can use `use` inside any block — it's scoped to that block:
+
+```rust
+fn process() {
+    use std::collections::HashSet;  // only in scope for this function
+    let mut seen = HashSet::new();
+    seen.insert(1);
+}
+
+impl MyStruct {
+    fn render(&self) {
+        use std::fmt::Write;  // only needed in this method
+        let mut buf = String::new();
+        write!(buf, "{}", self.value).unwrap();
+        println!("{}", buf);
+    }
+}
+```
+
+This is useful for imports that are only relevant in one place — keeps the top-level import list clean.
+
+---
+
 <p align="center">
   <strong>Tutorial 4 of 7 — Stage 10: Modules & Crates</strong>
 </p>
