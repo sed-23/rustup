@@ -666,6 +666,138 @@ todo_workspace/
 
 ---
 
+## Workspace Patterns in the Real World
+
+### How Major Rust Projects Use Workspaces
+
+The Rust compiler itself (`rustc`) is a workspace with dozens of crates. The `tokio` async runtime, `serde`, `clap`, and most large Rust projects use workspaces for the same reasons you would.
+
+Here's a simplified view of how `tokio` structures its workspace:
+
+```
+tokio/
+├── Cargo.toml          ← [workspace] root
+├── tokio/              ← the main crate users depend on
+│   └── Cargo.toml
+├── tokio-util/         ← extra utilities (separate crate)
+│   └── Cargo.toml
+├── tokio-macros/       ← proc macros (must be a separate crate)
+│   └── Cargo.toml
+└── tests/              ← integration tests across the whole workspace
+    └── Cargo.toml
+```
+
+The macros crate is separate because Rust requires proc-macro crates to be their own crate — a workspace makes this clean.
+
+### The `workspace.dependencies` Feature (Rust 1.64+)
+
+Before Rust 1.64, keeping dependency versions in sync across workspace members was tedious — you'd update `serde` in three Cargo.toml files and forget one. Now you can centralize it:
+
+```toml
+# Root Cargo.toml
+[workspace]
+members = ["api", "cli", "core"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "1.0"
+```
+
+```toml
+# api/Cargo.toml
+[dependencies]
+serde = { workspace = true }      # inherits version AND features from root
+tokio = { workspace = true }
+core = { path = "../core" }
+```
+
+```toml
+# cli/Cargo.toml
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+core = { path = "../core" }
+```
+
+Now updating `serde` to `1.1` means changing **one line** in the root `Cargo.toml`. All members automatically pick up the change.
+
+### Running Commands Across a Workspace
+
+```bash
+# Build everything
+cargo build --workspace
+
+# Test everything
+cargo test --workspace
+
+# Build only one crate
+cargo build -p api
+
+# Run only one crate
+cargo run -p cli
+
+# Check all crates for errors (faster than building)
+cargo check --workspace
+
+# Format all crates
+cargo fmt --all
+
+# Lint all crates
+cargo clippy --workspace
+```
+
+### Shared Dev Dependencies
+
+Dev dependencies (for tests/benchmarks) can also be shared:
+
+```toml
+# Root Cargo.toml
+[workspace.dependencies]
+# Production deps
+serde = "1.0"
+
+# Dev/test deps — mark them and members inherit only if they opt in
+proptest = "1.0"
+criterion = "0.5"
+```
+
+```toml
+# core/Cargo.toml
+[dev-dependencies]
+proptest = { workspace = true }   # property-based tests
+criterion = { workspace = true }  # benchmarks
+```
+
+### Best Practices
+
+| Practice | Why |
+|----------|-----|
+| One `Cargo.lock` for the workspace | Ensures all crates use identical dependency versions |
+| Use `workspace.dependencies` for shared deps | Single source of truth — prevents version drift |
+| Keep `target/` at the workspace root | Shared build cache; crates don't rebuild shared dependencies |
+| Separate proc-macro crates | Rust requires it; workspaces make it clean |
+| One integration test crate | Can test across multiple workspace members together |
+| `cargo test --workspace` in CI | Catches regressions in all crates at once |
+
+### Avoiding Version Conflicts
+
+If two workspace members depend on different versions of the same crate, Cargo will compile both versions. This is usually fine, but can cause confusion when types from one version aren't compatible with types from another.
+
+```toml
+# ❌ Bad: members use different serde versions
+# member_a/Cargo.toml: serde = "1.0.100"
+# member_b/Cargo.toml: serde = "1.0.150"
+# Result: two versions of serde compiled; a::MyStruct != b::MyStruct
+
+# ✅ Good: centralized in workspace
+# Root: [workspace.dependencies] serde = "1.0"
+# Both members: serde = { workspace = true }
+# Result: one version, types are compatible across the workspace
+```
+
+---
+
 <p align="center">
   <strong>Tutorial 6 of 7 — Stage 10: Modules & Crates</strong>
 </p>
