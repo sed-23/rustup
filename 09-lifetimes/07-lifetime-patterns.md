@@ -679,6 +679,135 @@ fn main() {
 
 ---
 
+## Lifetime Patterns — Quiz & Cheat Sheet
+
+### Quick Quiz: Does This Compile?
+
+Test your understanding. For each snippet, decide: **compiles** or **error**? Answer is in the fold below each.
+
+**Q1:**
+```rust
+fn first(s: &str) -> &str { &s[..1] }
+```
+<details><summary>Answer</summary>✅ Compiles — elision rule 2: one input ref, output gets same lifetime.</details>
+
+**Q2:**
+```rust
+fn pick(a: &str, b: &str) -> &str { a }
+```
+<details><summary>Answer</summary>❌ Error — two input refs, ambiguous which lifetime to assign to the output. Fix: `fn pick<'a>(a: &'a str, b: &str) -> &'a str`</details>
+
+**Q3:**
+```rust
+fn main() {
+    let s = String::from("hello");
+    let r = &s;
+    drop(s);
+    println!("{}", r);
+}
+```
+<details><summary>Answer</summary>❌ Error — `s` is moved (dropped) while `r` still borrows it. The borrow checker catches this.</details>
+
+**Q4:**
+```rust
+struct Wrap<'a>(&'a str);
+impl<'a> Wrap<'a> {
+    fn get(&self) -> &str { self.0 }
+}
+```
+<details><summary>Answer</summary>✅ Compiles — elision rule 3 on `get`: output borrows from `&self`, and since `self` contains `&'a str`, the borrow is valid.</details>
+
+**Q5:**
+```rust
+fn make() -> &str {
+    let s = String::from("hi");
+    &s
+}
+```
+<details><summary>Answer</summary>❌ Error — returning a reference to a local variable. `s` is dropped at end of function, leaving a dangling reference.</details>
+
+**Q6:**
+```rust
+fn identity<'a>(s: &'a str) -> &'a str { s }
+```
+<details><summary>Answer</summary>✅ Compiles — explicit annotation saying "output borrows from input." Equivalent to what elision would infer anyway.</details>
+
+**Q7:**
+```rust
+static MSG: &str = "hello";
+fn get() -> &'static str { MSG }
+```
+<details><summary>Answer</summary>✅ Compiles — `'static` data lives for the whole program, perfectly valid to return.</details>
+
+**Q8:**
+```rust
+fn longer<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+fn main() {
+    let s1 = String::from("long string");
+    let result;
+    {
+        let s2 = String::from("xyz");
+        result = longer(s1.as_str(), s2.as_str());
+        println!("{}", result); // use inside block
+    }
+}
+```
+<details><summary>Answer</summary>✅ Compiles — `result` is only used inside the block where both `s1` and `s2` are alive. (Would fail if you moved `println!` outside the block.)</details>
+
+---
+
+### Decision Tree: Should I Add Lifetime Annotations?
+
+```
+Is the function/struct using references?
+               │
+              YES
+               │
+    Does the compiler complain?
+         │           │
+        NO           YES — add what the compiler suggests
+         │
+    Leave it alone — elision handles it
+         │
+    Does the output reference borrow from multiple inputs?
+         │               │
+        NO               YES
+         │                │
+    Elision covers it    Annotate to say which input
+                         the output borrows from
+         │
+    Does the struct hold a reference?
+         │               │
+        NO               YES — must annotate with 'a
+         │
+    Does a function return 'static?
+         │               │
+        NO               YES — annotate 'static
+         │
+   You probably don't need annotations
+```
+
+---
+
+### Lifetime Cheat Sheet
+
+| Situation | Pattern | Example |
+|-----------|---------|---------|
+| One input ref, one output ref | Elision handles it | `fn first(s: &str) -> &str` |
+| Multiple input refs, one output | Annotate the source | `fn f<'a>(a: &'a str, b: &str) -> &'a str` |
+| Output from either input | Same `'a` on both | `fn longest<'a>(a: &'a str, b: &'a str) -> &'a str` |
+| Struct holds a reference | Lifetime on struct | `struct S<'a> { x: &'a str }` |
+| Method output from `self` | Elision Rule 3 | `fn get(&self) -> &str` |
+| Method output NOT from `self` | Explicit annotation | `fn get<'a>(&self, s: &'a str) -> &'a str` |
+| String literal / constant | `'static` | `fn name() -> &'static str { "Rust" }` |
+| Trait object that must be sendable | `'static` bound | `Box<dyn Trait + 'static>` |
+| Two independent reference fields | Two lifetimes | `struct S<'a, 'b> { a: &'a str, b: &'b str }` |
+| Fighting lifetimes on a struct | Own the data instead | `struct S { x: String }` |
+
+---
+
 <p align="center">
   <strong>Tutorial 7 of 7 — Stage 9: Lifetimes</strong>
 </p>
