@@ -137,6 +137,37 @@ Found a typo? Want to improve an explanation? PRs are welcome!
 
 ---
 
+## 📊 Progress
+
+*Last updated: April 2026*
+
+| Stage | Title | Status |
+|:-----:|-------|:------:|
+| 1 | The Starting Line | ✅ Complete |
+| 2 | Rust Fundamentals | ✅ Complete |
+| 3 | Ownership | ✅ Complete |
+| 4 | Structuring Data | ✅ Complete |
+| 5 | Collections | ✅ Complete |
+| 6 | Closures & Iterators | ✅ Complete |
+| 7 | Error Handling | ✅ Complete |
+| 8 | Generics & Traits | ✅ Complete |
+| 9 | Lifetimes | ✅ Complete |
+| 10 | Modules & Crates | ✅ Complete |
+| 11 | Smart Pointers | 🚧 Coming soon |
+| 12 | Fearless Concurrency | 🚧 Coming soon |
+| 13 | Async Rust | 🚧 Coming soon |
+| 14–18 | DSA in Rust | 🚧 Coming soon |
+| 19–22 | Advanced Topics | 🚧 Coming soon |
+| 23–25 | Real-World Projects | 🚧 Coming soon |
+
+```mermaid
+pie title Tutorial Completion
+    "Complete (Stages 1-10)" : 10
+    "Coming Soon (Stages 11-25)" : 15
+```
+
+---
+
 ## 📜 License
 
 This project is licensed under the MIT License — see the [LICENSE](./LICENSE) file.
