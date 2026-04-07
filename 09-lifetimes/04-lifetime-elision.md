@@ -527,6 +527,60 @@ No annotations needed — Rule 3 handles it.
 
 ---
 
+## Try It Yourself — Elision Exercises
+
+For each function below, apply the three elision rules manually and write out the full annotated signature. Then verify your answer by expanding the solution.
+
+**Exercise 1:**
+```rust
+fn trim(s: &str) -> &str { s.trim() }
+```
+<details><summary>Solution</summary>
+
+Rule 1: `s` gets `'a`. Rule 2: one input lifetime → output gets `'a`.
+
+Full form: `fn trim<'a>(s: &'a str) -> &'a str`
+</details>
+
+**Exercise 2:**
+```rust
+fn debug_str(value: &i32) -> &i32 { value }
+```
+<details><summary>Solution</summary>
+
+Rule 1: `value` gets `'a`. Rule 2: one input lifetime → output gets `'a`.
+
+Full form: `fn debug_str<'a>(value: &'a i32) -> &'a i32`
+</details>
+
+**Exercise 3:**
+```rust
+impl Config {
+    fn host(&self) -> &str { &self.host }
+}
+```
+<details><summary>Solution</summary>
+
+Rule 1: `&self` gets `'a`. Rule 3: method with `&self`, output gets `'a`.
+
+Full form: `fn host<'a>(&'a self) -> &'a str`
+</details>
+
+**Exercise 4:**
+```rust
+fn first_two(a: &str, b: &str) -> &str { a }
+```
+<details><summary>Solution</summary>
+
+Rule 1: `a` gets `'a`, `b` gets `'b`. Neither Rule 2 (two inputs) nor Rule 3 (no `&self`) applies.
+
+**Elision fails** — the compiler cannot determine which lifetime to use for the output. You must annotate manually:
+
+`fn first_two<'a>(a: &'a str, b: &str) -> &'a str`
+</details>
+
+---
+
 <p align="center">
   <strong>Tutorial 4 of 7 — Stage 9: Lifetimes</strong>
 </p>

@@ -798,6 +798,95 @@ The binary crate (`main.rs`) uses the library crate (`lib.rs`) by the package na
 
 ---
 
+## Try It Yourself — File Splitting Exercises
+
+**Exercise 1 — Basic split**
+
+Start with this single-file program. Split it into two files: `main.rs` and `math.rs`.
+
+```rust
+// main.rs (before)
+fn add(a: i32, b: i32) -> i32 { a + b }
+fn multiply(a: i32, b: i32) -> i32 { a * b }
+
+fn main() {
+    println!("{}", add(2, 3));
+    println!("{}", multiply(4, 5));
+}
+```
+
+<details><summary>Solution</summary>
+
+```rust
+// src/math.rs
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+pub fn multiply(a: i32, b: i32) -> i32 { a * b }
+
+// src/main.rs
+mod math;
+use math::{add, multiply};
+
+fn main() {
+    println!("{}", add(2, 3));
+    println!("{}", multiply(4, 5));
+}
+```
+</details>
+
+**Exercise 2 — Nested modules**
+
+Restructure the code below into files: `main.rs`, `shapes/mod.rs`, `shapes/circle.rs`, `shapes/rectangle.rs`.
+
+```rust
+// All in main.rs (before)
+mod shapes {
+    pub struct Circle { pub radius: f64 }
+    pub struct Rectangle { pub width: f64, pub height: f64 }
+    impl Circle { pub fn area(&self) -> f64 { std::f64::consts::PI * self.radius * self.radius } }
+    impl Rectangle { pub fn area(&self) -> f64 { self.width * self.height } }
+}
+fn main() {
+    let c = shapes::Circle { radius: 3.0 };
+    let r = shapes::Rectangle { width: 4.0, height: 5.0 };
+    println!("Circle area: {:.2}", c.area());
+    println!("Rectangle area: {:.2}", r.area());
+}
+```
+
+<details><summary>Solution</summary>
+
+```rust
+// src/shapes/circle.rs
+pub struct Circle { pub radius: f64 }
+impl Circle {
+    pub fn area(&self) -> f64 { std::f64::consts::PI * self.radius * self.radius }
+}
+
+// src/shapes/rectangle.rs
+pub struct Rectangle { pub width: f64, pub height: f64 }
+impl Rectangle {
+    pub fn area(&self) -> f64 { self.width * self.height }
+}
+
+// src/shapes/mod.rs  (or src/shapes.rs with src/shapes/ dir)
+pub mod circle;
+pub mod rectangle;
+pub use circle::Circle;
+pub use rectangle::Rectangle;
+
+// src/main.rs
+mod shapes;
+fn main() {
+    let c = shapes::Circle { radius: 3.0 };
+    let r = shapes::Rectangle { width: 4.0, height: 5.0 };
+    println!("Circle area: {:.2}", c.area());
+    println!("Rectangle area: {:.2}", r.area());
+}
+```
+</details>
+
+---
+
 <p align="center">
   <strong>Tutorial 5 of 7 — Stage 10: Modules & Crates</strong>
 </p>
