@@ -2,6 +2,36 @@
 
 > *Small programs fit in one file. Real programs need structure. Learn to organize Rust projects like a pro.*
 
+## The Module System Mental Model
+
+Every Rust project is a **tree of modules** rooted at the crate root (`main.rs` or `lib.rs`). Think of it like a folder structure, but enforced by the compiler:
+
+```
+crate (root)
+├── config          mod config;
+│   └── defaults    mod defaults;
+├── users           mod users;
+│   ├── model       mod model;
+│   └── handlers    mod handlers;
+└── error           mod error;
+```
+
+Each `mod` declaration is like opening a folder. Items inside are private by default — you explicitly `pub` the ones you want to expose. This forces you to design a real public API rather than accidentally exposing internals.
+
+The `use` keyword is how you bring items into scope so you don't have to type full paths everywhere. And `pub use` lets you re-export items, giving users a clean flat API even when your internals are deeply nested.
+
+## Key Concepts at a Glance
+
+| Concept | One-line explanation |
+|---------|----------------------|
+| **crate** | The unit of compilation — one `src/lib.rs` or `src/main.rs` |
+| **package** | A `Cargo.toml` with one or more crates |
+| **mod** | Declares a module (namespace + privacy boundary) |
+| **pub** | Makes an item visible outside its module |
+| **use** | Brings a path into scope (shortcut for long paths) |
+| **pub use** | Re-exports an item — builds a clean public API |
+| **workspace** | Multiple packages sharing one `Cargo.lock` and `target/` |
+
 ## What You'll Learn
 
 - Rust's module system (`mod`, `pub`, `use`)
